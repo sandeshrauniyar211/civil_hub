@@ -26,7 +26,7 @@ const TOOLS: { id: Tool; label: string; description: string; icon: React.ReactNo
   {
     id: "boq",
     label: "BOQ Generator",
-    description: "Multi-section bill of quantities with rates, contingency, overhead, VAT.",
+    description: "Nepal-residential template, multi-section BOQ with rates, contingency, overhead, VAT. Export to Excel, CSV, and PDF.",
     icon: <ClipboardList className="h-4 w-4" />,
   },
   {
@@ -47,7 +47,7 @@ export function EstimationView() {
         eyebrow="Estimation"
         title="Quantity Estimation & BOQ"
         description="Three connected tools for civil estimation: takeoff quantities from drawings, build a priced BOQ, and analyse rates line-by-line. All saved locally — no account required."
-        meta={<Tag tone="primary">3 tools · Excel I/O</Tag>}
+        meta={<Tag tone="primary">3 tools · Excel + PDF · Nepal templates</Tag>}
       />
 
       {/* Tool selector — horizontal scrollable on mobile */}
@@ -107,7 +107,7 @@ export function EstimationView() {
           <li className="flex items-start gap-2">
             <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-border bg-background text-[10px] font-semibold text-foreground nums tabular-nums mt-0.5">3</span>
             <span>
-              <strong className="text-foreground">BOQ Generator</strong> — paste the quantities from step 1 and rates from step 2 into a multi-section BOQ. Add contingency, overhead, VAT → grand total. Export to Excel for submission.
+              <strong className="text-foreground">BOQ Generator</strong> — start from the <em>Nepal Residential</em> template (or paste quantities from step 1 and rates from step 2). Add contingency, overhead, VAT → grand total. Export to Excel, CSV, or print-ready PDF.
             </span>
           </li>
         </ol>

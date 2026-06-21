@@ -1,0 +1,968 @@
+     1→"use client";
+     2→
+     3→// CivilHub — Surveying Toolkit (Phase 2)
+     4→// Tools: Rise & Fall, HI (Height of Instrument) method, RL calculator, Bearing calculator
+     5→// Phase 2 additions:
+     6→//   • Excel / CSV import for every table-based tool (no more manual entry)
+     7→//   • Step-by-step "How it's calculated" panel showing live worked example
+     8→//   • Template downloads so users know the expected column layout
+     9→
+    10→import { useMemo, useState } from "react";
+    11→import {
+    12→  Plus,
+    13→  Trash2,
+    14→  Compass,
+    15→  ArrowDownUp,
+    16→  Mountain,
+    17→  Navigation,
+    18→  FileDown,
+    19→  Info,
+    20→} from "lucide-react";
+    21→import { cn } from "@/lib/utils";
+    22→import { Button } from "@/components/ui/button";
+    23→import { Input } from "@/components/ui/input";
+    24→import { useToast } from "@/hooks/use-toast";
+    25→import { SectionHeader, EmptyState, ResultLine, FieldLabel, Tag, Divider } from "../lib/ui";
+    26→import { useNav } from "../lib/nav";
+    27→import { ExcelUploadButton, TemplateDownloadButton } from "../lib/excel-upload-button";
+    28→import { ProcessPanel, ImportSummary, type ProcessStep } from "../lib/process-panel";
+    29→import { matchColumn, toNum, toStr, downloadCSV, downloadXLSX, type ParsedSheet } from "../lib/excel";
+    30→
+    31→type Tool = "rise-fall" | "hi" | "rl" | "bearing";
+    32→
+    33→const TOOLS: { id: Tool; label: string; description: string; icon: React.ReactNode }[] = [
+    34→  { id: "rise-fall", label: "Rise & Fall Method", description: "Levelling reduction by computing rise/fall between consecutive stations.", icon: <ArrowDownUp className="h-4 w-4" /> },
+    35→  { id: "hi", label: "HI Method", description: "Height of Instrument method — RL = HI − FS for each turning point.", icon: <Mountain className="h-4 w-4" /> },
+    36→  { id: "rl", label: "RL Calculator", description: "Quick single-station RL from known benchmark and readings.", icon: <Mountain className="h-4 w-4" /> },
+    37→  { id: "bearing", label: "Bearing Calculator", description: "Compute included angles and convert between whole-circle bearings.", icon: <Navigation className="h-4 w-4" /> },
+    38→];
+    39→
+    40→export function SurveyingView() {
+    41→  const { state, go } = useNav();
+    42→  const activeTool = (state.sub as Tool) || "rise-fall";
+    43→
+    44→  return (
+    45→    <div className="flex flex-col gap-6">
+    46→      <SectionHeader
+    47→        eyebrow="Surveying"
+    48→        title="Surveying Toolkit"
+    49→        description="Field reduction tools for levelling and traversing. Import staff readings from Excel, see the worked steps live, and export results — built for site work."
+    50→        meta={<Tag tone="primary">4 tools · Excel import</Tag>}
+    51→      />
+    52→
+    53→      {/* Tool selector — horizontal scrollable on mobile */}
+    54→      <div className="flex gap-2 overflow-x-auto scrollbar-thin pb-1">
+    55→        {TOOLS.map((t) => {
+    56→          const active = activeTool === t.id;
+    57→          return (
+    58→            <button
+    59→              key={t.id}
+    60→              onClick={() => go("surveying", { sub: t.id })}
+    61→              className={cn(
+    62→                "flex items-start gap-2.5 p-3 rounded-lg border text-left min-w-[220px] shrink-0 transition-all",
+    63→                active
+    64→                  ? "border-primary/30 bg-primary/5"
+    65→                  : "border-border bg-card hover:border-foreground/20 hover:bg-muted/30",
+    66→              )}
+    67→            >
+    68→              <div className={cn(
+    69→                "flex h-7 w-7 items-center justify-center rounded-md border shrink-0",
+    70→                active ? "border-primary/20 bg-primary/10 text-primary" : "border-border bg-background text-muted-foreground",
+    71→              )}>
+    72→                {t.icon}
+    73→              </div>
+    74→              <div className="min-w-0">
+    75→                <div className={cn("text-sm font-medium", active ? "text-foreground" : "text-foreground")}>{t.label}</div>
+    76→                <div className="text-[11px] text-muted-foreground leading-snug line-clamp-2">{t.description}</div>
+    77→              </div>
+    78→            </button>
+    79→          );
+    80→        })}
+    81→      </div>
+    82→
+    83→      <div className="animate-fade-in">
+    84→        {activeTool === "rise-fall" && <RiseFallTool />}
+    85→        {activeTool === "hi" && <HiMethodTool />}
+    86→        {activeTool === "rl" && <RlCalculator />}
+    87→        {activeTool === "bearing" && <BearingCalculator />}
+    88→      </div>
+    89→    </div>
+    90→  );
+    91→}
+    92→
+    93→// ============ Rise & Fall Method ============
+    94→
+    95→interface RfRow {
+    96→  id: string;
+    97→  station: string;
+    98→  bs: number; // back sight
+    99→  is_: number; // intermediate sight
+   100→  fs: number; // fore sight
+   101→}
+   102→
+   103→function newRow(station = "", bs = 0, is_ = 0, fs = 0): RfRow {
+   104→  return { id: `r_${Math.random().toString(36).slice(2, 8)}`, station, bs, is_, fs };
+   105→}
+   106→
+   107→function RiseFallTool() {
+   108→  const { toast } = useToast();
+   109→  const [benchmark, setBenchmark] = useState(100.0);
+   110→  const [importedFile, setImportedFile] = useState<{ name: string; columns: { label: string; matched: string | undefined }[] } | null>(null);
+   111→  const [rows, setRows] = useState<RfRow[]>([
+   112→    newRow("A", 1.5, 0, 0),
+   113→    newRow("B", 0.8, 0, 1.2),
+   114→    newRow("C", 0, 1.6, 0),
+   115→    newRow("D", 0, 0, 0.9),
+   116→  ]);
+   117→
+   118→  const computed = useMemo(() => {
+   119→    const acc = { prevReading: 0, rl: benchmark };
+   120→    return rows.map((r, idx) => {
+   121→      const reading = r.bs > 0 ? r.bs : r.is_ > 0 ? r.is_ : r.fs;
+   122→      let rise = 0;
+   123→      let fall = 0;
+   124→      if (idx !== 0) {
+   125→        const diff = acc.prevReading - reading;
+   126→        if (diff > 0) rise = diff;
+   127→        else fall = -diff;
+   128→        acc.rl = acc.rl + rise - fall;
+   129→      }
+   130→      acc.prevReading = reading;
+   131→      return { ...r, reading, rise, fall, rl: round(acc.rl, 4) };
+   132→    });
+   133→  }, [rows, benchmark]);
+   134→
+   135→  const check = useMemo(() => {
+   136→    const sumBs = computed.reduce((s, r) => s + r.bs, 0);
+   137→    const sumFs = computed.reduce((s, r) => s + r.fs, 0);
+   138→    const sumRise = computed.reduce((s, r) => s + r.rise, 0);
+   139→    const sumFall = computed.reduce((s, r) => s + r.fall, 0);
+   140→    const lastRl = computed.length ? computed[computed.length - 1].rl : benchmark;
+   141→    const expectedLastRl = benchmark + sumRise - sumFall;
+   142→    const arithmeticCheck = Math.abs((sumBs - sumFs) - (lastRl - benchmark)) < 0.001;
+   143→    return { sumBs, sumFs, sumRise, sumFall, lastRl, expectedLastRl, arithmeticCheck };
+   144→  }, [computed, benchmark]);
+   145→
+   146→  const updateRow = (id: string, patch: Partial<RfRow>) => {
+   147→    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+   148→  };
+   149→
+   150→  // ---- Excel import ----
+   151→  const handleImport = (sheet: ParsedSheet, file: File) => {
+   152→    const colStation = matchColumn(sheet.headers, ["station", "point", "stn"]);
+   153→    const colBs = matchColumn(sheet.headers, ["bs", "backsight", "back sight", "back-sight"]);
+   154→    const colIs = matchColumn(sheet.headers, ["is", "isight", "intermediate", "intermediate sight"]);
+   155→    const colFs = matchColumn(sheet.headers, ["fs", "foresight", "fore sight", "fore-sight"]);
+   156→
+   157→    // Fall back to positional if no headers matched
+   158→    const usePositional = !colBs && !colFs;
+   159→    const imported: RfRow[] = sheet.rows.map((r, idx) => {
+   160→      const vals = Object.values(r);
+   161→      return newRow(
+   162→        colStation ? toStr(r[colStation], `Stn ${idx + 1}`) : `Stn ${idx + 1}`,
+   163→        colBs ? toNum(r[colBs]) : usePositional ? toNum(vals[0]) : 0,
+   164→        colIs ? toNum(r[colIs]) : usePositional ? toNum(vals[1]) : 0,
+   165→        colFs ? toNum(r[colFs]) : usePositional ? toNum(vals[2]) : 0,
+   166→      );
+   167→    });
+   168→
+   169→    if (imported.length === 0) {
+   170→      toast({ title: "Import failed", description: "No data rows found in the file.", variant: "destructive" });
+   171→      return;
+   172→    }
+   173→
+   174→    setRows(imported);
+   175→    setImportedFile({
+   176→      name: file.name,
+   177→      columns: [
+   178→        { label: "Station", matched: colStation },
+   179→        { label: "BS", matched: colBs },
+   180→        { label: "IS", matched: colIs },
+   181→        { label: "FS", matched: colFs },
+   182→      ],
+   183→    });
+   184→    toast({
+   185→      title: "Imported successfully",
+   186→      description: `${imported.length} rows loaded from ${file.name}`,
+   187→    });
+   188→  };
+   189→
+   190→  const handleExportCSV = () => {
+   191→    downloadCSV("rise-fall-reduction.csv", [
+   192→      ["Station", "BS", "IS", "FS", "Rise", "Fall", "RL"],
+   193→      ...computed.map((r) => [
+   194→        r.station,
+   195→        r.bs,
+   196→        r.is_,
+   197→        r.fs,
+   198→        r.rise.toFixed(3),
+   199→        r.fall.toFixed(3),
+   200→        r.rl.toFixed(3),
+   201→      ]),
+   202→      ["Σ", check.sumBs.toFixed(3), "", check.sumFs.toFixed(3), check.sumRise.toFixed(3), check.sumFall.toFixed(3), check.lastRl.toFixed(3)],
+   203→    ]);
+   204→    toast({ title: "Exported", description: "Rise & fall reduction saved as CSV." });
+   205→  };
+   206→
+   207→  const handleExportXLSX = () => {
+   208→    downloadXLSX(
+   209→      "rise-fall-reduction.xlsx",
+   210→      [
+   211→        ["Station", "BS", "IS", "FS", "Rise", "Fall", "RL"],
+   212→        ...computed.map((r) => [
+   213→          r.station,
+   214→          r.bs,
+   215→          r.is_,
+   216→          r.fs,
+   217→          +r.rise.toFixed(3),
+   218→          +r.fall.toFixed(3),
+   219→          +r.rl.toFixed(3),
+   220→        ]),
+   221→        ["Σ", +check.sumBs.toFixed(3), "", +check.sumFs.toFixed(3), +check.sumRise.toFixed(3), +check.sumFall.toFixed(3), +check.lastRl.toFixed(3)],
+   222→      ],
+   223→      "Rise & Fall",
+   224→    );
+   225→    toast({ title: "Exported", description: "Rise & fall reduction saved as XLSX." });
+   226→  };
+   227→
+   228→  const handleDownloadTemplate = () => {
+   229→    downloadCSV("rise-fall-template.csv", [
+   230→      ["Station", "BS", "IS", "FS"],
+   231→      ["A", 1.5, "", ""],
+   232→      ["B", 0.8, "", 1.2],
+   233→      ["C", "", 1.6, ""],
+   234→      ["D", "", "", 0.9],
+   235→    ]);
+   236→    toast({ title: "Template downloaded", description: "Fill in your readings and re-import." });
+   237→  };
+   238→
+   239→  // ---- Process steps (live values from row 1→2) ----
+   240→  const firstPair = computed.length >= 2 ? [computed[0], computed[1]] : null;
+   241→  const processSteps: ProcessStep[] = firstPair
+   242→    ? [
+   243→        {
+   244→          title: "Identify the reading at each station",
+   245→          formula: `Station ${firstPair[0].station}: BS=${firstPair[0].bs}, IS=${firstPair[0].is_}, FS=${firstPair[0].fs} → reading = ${firstPair[0].reading.toFixed(3)}`,
+   246→          note: "For each station, only one of BS / IS / FS is typically taken. The reading used is whichever is non-zero (priority: BS → IS → FS).",
+   247→        },
+   248→        {
+   249→          title: "Compute rise or fall between consecutive stations",
+   250→          formula: `diff = prev_reading − current_reading = ${firstPair[0].reading.toFixed(3)} − ${firstPair[1].reading.toFixed(3)} = ${(firstPair[0].reading - firstPair[1].reading).toFixed(3)}`,
+   251→          note: "If diff > 0 → Rise (ground went up). If diff < 0 → Fall (ground went down).",
+   252→          result:
+   253→            firstPair[0].reading - firstPair[1].reading > 0
+   254→              ? `Rise = ${firstPair[1].rise.toFixed(3)}`
+   255→              : `Fall = ${firstPair[1].fall.toFixed(3)}`,
+   256→        },
+   257→        {
+   258→          title: "Update the Reduced Level (RL)",
+   259→          formula: `RL_${firstPair[1].station} = RL_${firstPair[0].station} + Rise − Fall = ${firstPair[0].rl.toFixed(3)} + ${firstPair[1].rise.toFixed(3)} − ${firstPair[1].fall.toFixed(3)} = ${firstPair[1].rl.toFixed(3)}`,
+   260→          note: "The first station inherits the benchmark RL. Every subsequent station's RL is derived from the previous one.",
+   261→        },
+   262→        {
+   263→          title: "Arithmetic check at the end",
+   264→          formula: `ΣBS − ΣFS = ${check.sumBs.toFixed(3)} − ${check.sumFs.toFixed(3)} = ${(check.sumBs - check.sumFs).toFixed(3)}    |    Last_RL − BM_RL = ${check.lastRl.toFixed(3)} − ${benchmark.toFixed(3)} = ${(check.lastRl - benchmark).toFixed(3)}`,
+   265→          note: "These two values must match for the levelling to be arithmetically correct.",
+   266→          result: check.arithmeticCheck ? "Check PASS" : "Check FAIL",
+   267→        },
+   268→      ]
+   269→    : [];
+   270→
+   271→  return (
+   272→    <div className="space-y-4">
+   273→      {/* Import bar */}
+   274→      <div className="rounded-lg border border-border bg-card p-4">
+   275→        <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+   276→          <div>
+   277→            <h3 className="text-sm font-semibold">Rise & Fall Reduction</h3>
+   278→            <p className="text-xs text-muted-foreground mt-0.5">Enter staff readings manually or import from Excel — RL, rise, and fall update live.</p>
+   279→          </div>
+   280→          <div className="flex flex-wrap items-center gap-1.5">
+   281→            <ExcelUploadButton
+   282→              size="sm"
+   283→              onParsed={handleImport}
+   284→              onError={(m) => toast({ title: "Import failed", description: m, variant: "destructive" })}
+   285→            />
+   286→            <TemplateDownloadButton size="sm" onDownload={handleDownloadTemplate} />
+   287→            <Button size="sm" variant="outline" className="h-8 text-xs" onClick={handleExportCSV}>
+   288→              <FileDown className="h-3 w-3 mr-1.5" />
+   289→              CSV
+   290→            </Button>
+   291→            <Button size="sm" variant="outline" className="h-8 text-xs" onClick={handleExportXLSX}>
+   292→              <FileDown className="h-3 w-3 mr-1.5" />
+   293→              XLSX
+   294→            </Button>
+   295→          </div>
+   296→        </div>
+   297→
+   298→        {importedFile && (
+   299→          <div className="mb-3">
+   300→            <ImportSummary
+   301→              fileName={importedFile.name}
+   302→              rowCount={rows.length}
+   303→              detectedColumns={importedFile.columns}
+   304→              onClear={() => setImportedFile(null)}
+   305→            />
+   306→          </div>
+   307→        )}
+   308→
+   309→        <div className="mb-3">
+   310→          <FieldLabel hint="Known RL">Benchmark RL</FieldLabel>
+   311→          <Input
+   312→            type="number"
+   313→            step={0.001}
+   314→            value={benchmark}
+   315→            onChange={(e) => setBenchmark(Number(e.target.value))}
+   316→            className="h-9 w-40"
+   317→          />
+   318→        </div>
+   319→
+   320→        <div className="overflow-x-auto scrollbar-thin">
+   321→          <table className="w-full text-sm min-w-[640px]">
+   322→            <thead className="bg-muted/40 text-[11px] text-muted-foreground">
+   323→              <tr>
+   324→                <th className="text-left font-medium px-2 py-2">Station</th>
+   325→                <th className="text-right font-medium px-2 py-2">BS</th>
+   326→                <th className="text-right font-medium px-2 py-2">IS</th>
+   327→                <th className="text-right font-medium px-2 py-2">FS</th>
+   328→                <th className="text-right font-medium px-2 py-2">Rise</th>
+   329→                <th className="text-right font-medium px-2 py-2">Fall</th>
+   330→                <th className="text-right font-medium px-2 py-2">RL</th>
+   331→                <th className="w-10 px-1 py-2"></th>
+   332→              </tr>
+   333→            </thead>
+   334→            <tbody>
+   335→              {rows.map((r, idx) => {
+   336→                const c = computed[idx];
+   337→                return (
+   338→                  <tr key={r.id} className="border-t border-border hover:bg-muted/20">
+   339→                    <td className="px-2 py-1">
+   340→                      <input
+   341→                        value={r.station}
+   342→                        onChange={(e) => updateRow(r.id, { station: e.target.value })}
+   343→                        placeholder={`Stn ${idx + 1}`}
+   344→                        className="w-full bg-transparent text-sm outline-none"
+   345→                      />
+   346→                    </td>
+   347→                    <td className="px-1 py-1">
+   348→                      <NumCell value={r.bs} onChange={(v) => updateRow(r.id, { bs: v })} />
+   349→                    </td>
+   350→                    <td className="px-1 py-1">
+   351→                      <NumCell value={r.is_} onChange={(v) => updateRow(r.id, { is_: v })} />
+   352→                    </td>
+   353→                    <td className="px-1 py-1">
+   354→                      <NumCell value={r.fs} onChange={(v) => updateRow(r.id, { fs: v })} />
+   355→                    </td>
+   356→                    <td className="px-2 py-1 text-right nums tabular-nums text-[oklch(0.45_0.13_150)]">
+   357→                      {c.rise > 0 ? c.rise.toFixed(3) : ""}
+   358→                    </td>
+   359→                    <td className="px-2 py-1 text-right nums tabular-nums text-[oklch(0.5_0.18_27)]">
+   360→                      {c.fall > 0 ? c.fall.toFixed(3) : ""}
+   361→                    </td>
+   362→                    <td className="px-2 py-1 text-right nums tabular-nums font-medium">
+   363→                      {c.rl.toFixed(3)}
+   364→                    </td>
+   365→                    <td className="px-1 py-1 text-center">
+   366→                      <button
+   367→                        onClick={() => setRows((p) => p.filter((x) => x.id !== r.id))}
+   368→                        disabled={rows.length <= 2}
+   369→                        className="text-muted-foreground hover:text-[oklch(0.5_0.2_27)] disabled:opacity-30"
+   370→                        aria-label="Remove row"
+   371→                      >
+   372→                        <Trash2 className="h-3.5 w-3.5" />
+   373→                      </button>
+   374→                    </td>
+   375→                  </tr>
+   376→                );
+   377→              })}
+   378→            </tbody>
+   379→            <tfoot className="bg-muted/40 text-xs font-medium border-t-2 border-border">
+   380→              <tr>
+   381→                <td className="px-2 py-2 text-muted-foreground">Σ</td>
+   382→                <td className="px-2 py-2 text-right nums tabular-nums">{check.sumBs.toFixed(3)}</td>
+   383→                <td></td>
+   384→                <td className="px-2 py-2 text-right nums tabular-nums">{check.sumFs.toFixed(3)}</td>
+   385→                <td className="px-2 py-2 text-right nums tabular-nums text-[oklch(0.45_0.13_150)]">{check.sumRise.toFixed(3)}</td>
+   386→                <td className="px-2 py-2 text-right nums tabular-nums text-[oklch(0.5_0.18_27)]">{check.sumFall.toFixed(3)}</td>
+   387→                <td className="px-2 py-2 text-right nums tabular-nums">{check.lastRl.toFixed(3)}</td>
+   388→                <td></td>
+   389→              </tr>
+   390→            </tfoot>
+   391→          </table>
+   392→        </div>
+   393→
+   394→        <div className="mt-2">
+   395→          <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => setRows((p) => [...p, newRow()])}>
+   396→            <Plus className="h-3.5 w-3.5 mr-1.5" />
+   397→            Add station
+   398→          </Button>
+   399→        </div>
+   400→      </div>
+   401→
+   402→      {/* Side-by-side: check + process panel */}
+   403→      <div className="grid grid-cols-1 lg:grid-cols-[1fr_1fr] gap-4">
+   404→        <div className="rounded-lg border border-border bg-card p-4">
+   405→          <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground mb-3">Arithmetic Check</h3>
+   406→          <div className="space-y-1">
+   407→            <ResultLine label="Σ BS − Σ FS" value={round(check.sumBs - check.sumFs, 3)} />
+   408→            <ResultLine label="Last RL − Bench RL" value={round(check.lastRl - benchmark, 3)} />
+   409→            <Divider />
+   410→            <div className="flex items-center justify-between py-2">
+   411→              <span className="text-xs text-muted-foreground">Check status</span>
+   412→              <Tag tone={check.arithmeticCheck ? "success" : "danger"}>
+   413→                {check.arithmeticCheck ? "Pass" : "Fail"}
+   414→              </Tag>
+   415→            </div>
+   416→          </div>
+   417→        </div>
+   418→
+   419→        <div className="rounded-lg border border-border bg-muted/30 p-4 text-xs text-muted-foreground leading-relaxed">
+   420→          <strong className="text-foreground">Rise/Fall method:</strong> For each station pair, rise = previous reading − current (if positive), fall = current − previous (if positive). New RL = previous RL + rise − fall.
+   421→        </div>
+   422→      </div>
+   423→
+   424→      <ProcessPanel
+   425→        steps={processSteps}
+   426→        intro={
+   427→          <>
+   428→            The <strong>Rise & Fall</strong> method computes the elevation difference between consecutive staff stations. Below is a worked example using your <em>first two stations</em>. Every other row follows the same logic.
+   429→          </>
+   430→        }
+   431→      />
+   432→    </div>
+   433→  );
+   434→}
+   435→
+   436→// ============ HI Method ============
+   437→
+   438→function HiMethodTool() {
+   439→  const { toast } = useToast();
+   440→  const [benchmark, setBenchmark] = useState(100.0);
+   441→  const [importedFile, setImportedFile] = useState<{ name: string; columns: { label: string; matched: string | undefined }[] } | null>(null);
+   442→  const [rows, setRows] = useState<RfRow[]>([
+   443→    newRow("A", 1.5, 0, 0),
+   444→    newRow("B", 0, 1.2, 0),
+   445→    newRow("C", 1.0, 0, 1.4),
+   446→    newRow("D", 0, 0, 0.9),
+   447→  ]);
+   448→
+   449→  const computed = useMemo(() => {
+   450→    const acc = { hi: benchmark, lastRl: benchmark };
+   451→    return rows.map((r, idx) => {
+   452→      if (idx === 0) {
+   453→        acc.hi = benchmark + r.bs;
+   454→        const rl = r.is_ > 0 ? acc.hi - r.is_ : r.fs > 0 ? acc.hi - r.fs : acc.hi;
+   455→        acc.lastRl = rl;
+   456→        return { ...r, hi: round(acc.hi, 4), rl: round(rl, 4) };
+   457→      }
+   458→      if (r.bs > 0) {
+   459→        // Turning point — new HI from previous RL + new BS
+   460→        acc.hi = acc.lastRl + r.bs;
+   461→      }
+   462→      const reading = r.is_ || r.fs;
+   463→      const rl = reading > 0 ? acc.hi - reading : acc.lastRl;
+   464→      acc.lastRl = rl;
+   465→      return { ...r, hi: round(acc.hi, 4), rl: round(rl, 4) };
+   466→    });
+   467→  }, [rows, benchmark]);
+   468→
+   469→  const updateRow = (id: string, patch: Partial<RfRow>) => {
+   470→    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+   471→  };
+   472→
+   473→  const handleImport = (sheet: ParsedSheet, file: File) => {
+   474→    const colStation = matchColumn(sheet.headers, ["station", "point", "stn"]);
+   475→    const colBs = matchColumn(sheet.headers, ["bs", "backsight", "back sight"]);
+   476→    const colIs = matchColumn(sheet.headers, ["is", "isight", "intermediate"]);
+   477→    const colFs = matchColumn(sheet.headers, ["fs", "foresight", "fore sight"]);
+   478→    const usePositional = !colBs && !colFs;
+   479→
+   480→    const imported: RfRow[] = sheet.rows.map((r, idx) => {
+   481→      const vals = Object.values(r);
+   482→      return newRow(
+   483→        colStation ? toStr(r[colStation], `Stn ${idx + 1}`) : `Stn ${idx + 1}`,
+   484→        colBs ? toNum(r[colBs]) : usePositional ? toNum(vals[0]) : 0,
+   485→        colIs ? toNum(r[colIs]) : usePositional ? toNum(vals[1]) : 0,
+   486→        colFs ? toNum(r[colFs]) : usePositional ? toNum(vals[2]) : 0,
+   487→      );
+   488→    });
+   489→
+   490→    if (imported.length === 0) {
+   491→      toast({ title: "Import failed", description: "No data rows found in the file.", variant: "destructive" });
+   492→      return;
+   493→    }
+   494→
+   495→    setRows(imported);
+   496→    setImportedFile({
+   497→      name: file.name,
+   498→      columns: [
+   499→        { label: "Station", matched: colStation },
+   500→        { label: "BS", matched: colBs },
+   501→        { label: "IS", matched: colIs },
+   502→        { label: "FS", matched: colFs },
+   503→      ],
+   504→    });
+   505→    toast({ title: "Imported successfully", description: `${imported.length} rows loaded from ${file.name}` });
+   506→  };
+   507→
+   508→  const handleDownloadTemplate = () => {
+   509→    downloadCSV("hi-method-template.csv", [
+   510→      ["Station", "BS", "IS", "FS"],
+   511→      ["A", 1.5, "", ""],
+   512→      ["B", "", 1.2, ""],
+   513→      ["C", 1.0, "", 1.4],
+   514→      ["D", "", "", 0.9],
+   515→    ]);
+   516→    toast({ title: "Template downloaded", description: "Fill in your readings and re-import." });
+   517→  };
+   518→
+   519→  const handleExportCSV = () => {
+   520→    downloadCSV("hi-method-reduction.csv", [
+   521→      ["Station", "BS", "IS", "FS", "HI", "RL"],
+   522→      ...computed.map((r) => [r.station, r.bs, r.is_, r.fs, r.hi.toFixed(3), r.rl.toFixed(3)]),
+   523→    ]);
+   524→    toast({ title: "Exported", description: "HI method reduction saved as CSV." });
+   525→  };
+   526→
+   527→  // Process steps — use first row as worked example
+   528→  const firstRow = computed[0];
+   529→  const processSteps: ProcessStep[] = firstRow
+   530→    ? [
+   531→        {
+   532→          title: "Compute Height of Instrument (HI) at the first setup",
+   533→          formula: `HI = Benchmark_RL + BS = ${benchmark.toFixed(3)} + ${firstRow.bs.toFixed(3)} = ${firstRow.hi.toFixed(3)}`,
+   534→          note: "The instrument is set up, a back-sight is taken on a benchmark of known RL. HI is the elevation of the instrument's line of sight.",
+   535→          result: `HI = ${firstRow.hi.toFixed(3)}`,
+   536→        },
+   537→        {
+   538→          title: "Compute RL of each staff station from HI",
+   539→          formula: `RL = HI − Reading  →  RL_${firstRow.station} = ${firstRow.hi.toFixed(3)} − ${(firstRow.is_ || firstRow.fs).toFixed(3)} = ${firstRow.rl.toFixed(3)}`,
+   540→          note: "Reading can be either an intermediate sight (IS) or a fore sight (FS). Both reduce directly from HI.",
+   541→          result: `RL_${firstRow.station} = ${firstRow.rl.toFixed(3)}`,
+   542→        },
+   543→        {
+   544→          title: "At a turning point, shift the instrument and recompute HI",
+   545→          formula: `New HI = previous RL (of TP) + new BS`,
+   546→          note: "A turning point (TP) is where a FS is followed by a BS — the instrument is moved, and HI must be recomputed because the line of sight has changed.",
+   547→        },
+   548→        {
+   549→          title: "Repeat until the last station",
+   550→          formula: `Final RL = HI_last − FS_last`,
+   551→          note: "HI method is preferred when many intermediate sights exist between benchmarks because each IS reduces directly without affecting the cumulative check.",
+   552→        },
+   553→      ]
+   554→    : [];
+   555→
+   556→  return (
+   557→    <div className="space-y-4">
+   558→      <div className="rounded-lg border border-border bg-card p-4">
+   559→        <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+   560→          <div>
+   561→            <h3 className="text-sm font-semibold">Height of Instrument Method</h3>
+   562→            <p className="text-xs text-muted-foreground mt-0.5">HI = Benchmark RL + BS, then RL = HI − (IS or FS). Import staff readings from Excel.</p>
+   563→          </div>
+   564→          <div className="flex flex-wrap items-center gap-1.5">
+   565→            <ExcelUploadButton
+   566→              size="sm"
+   567→              onParsed={handleImport}
+   568→              onError={(m) => toast({ title: "Import failed", description: m, variant: "destructive" })}
+   569→            />
+   570→            <TemplateDownloadButton size="sm" onDownload={handleDownloadTemplate} />
+   571→            <Button size="sm" variant="outline" className="h-8 text-xs" onClick={handleExportCSV}>
+   572→              <FileDown className="h-3 w-3 mr-1.5" />
+   573→              CSV
+   574→            </Button>
+   575→          </div>
+   576→        </div>
+   577→
+   578→        {importedFile && (
+   579→          <div className="mb-3">
+   580→            <ImportSummary
+   581→              fileName={importedFile.name}
+   582→              rowCount={rows.length}
+   583→              detectedColumns={importedFile.columns}
+   584→              onClear={() => setImportedFile(null)}
+   585→            />
+   586→          </div>
+   587→        )}
+   588→
+   589→        <div className="mb-3">
+   590→          <FieldLabel hint="Known RL">Benchmark RL</FieldLabel>
+   591→          <Input
+   592→            type="number"
+   593→            step={0.001}
+   594→            value={benchmark}
+   595→            onChange={(e) => setBenchmark(Number(e.target.value))}
+   596→            className="h-9 w-40"
+   597→          />
+   598→        </div>
+   599→
+   600→        <div className="overflow-x-auto scrollbar-thin">
+   601→          <table className="w-full text-sm min-w-[640px]">
+   602→            <thead className="bg-muted/40 text-[11px] text-muted-foreground">
+   603→              <tr>
+   604→                <th className="text-left font-medium px-2 py-2">Station</th>
+   605→                <th className="text-right font-medium px-2 py-2">BS</th>
+   606→                <th className="text-right font-medium px-2 py-2">IS</th>
+   607→                <th className="text-right font-medium px-2 py-2">FS</th>
+   608→                <th className="text-right font-medium px-2 py-2">HI</th>
+   609→                <th className="text-right font-medium px-2 py-2">RL</th>
+   610→                <th className="w-10 px-1 py-2"></th>
+   611→              </tr>
+   612→            </thead>
+   613→            <tbody>
+   614→              {rows.map((r, idx) => {
+   615→                const c = computed[idx];
+   616→                return (
+   617→                  <tr key={r.id} className="border-t border-border hover:bg-muted/20">
+   618→                    <td className="px-2 py-1">
+   619→                      <input value={r.station} onChange={(e) => updateRow(r.id, { station: e.target.value })} placeholder={`Stn ${idx + 1}`} className="w-full bg-transparent text-sm outline-none" />
+   620→                    </td>
+   621→                    <td className="px-1 py-1"><NumCell value={r.bs} onChange={(v) => updateRow(r.id, { bs: v })} /></td>
+   622→                    <td className="px-1 py-1"><NumCell value={r.is_} onChange={(v) => updateRow(r.id, { is_: v })} /></td>
+   623→                    <td className="px-1 py-1"><NumCell value={r.fs} onChange={(v) => updateRow(r.id, { fs: v })} /></td>
+   624→                    <td className="px-2 py-1 text-right nums tabular-nums text-muted-foreground">{c.hi.toFixed(3)}</td>
+   625→                    <td className="px-2 py-1 text-right nums tabular-nums font-medium">{c.rl.toFixed(3)}</td>
+   626→                    <td className="px-1 py-1 text-center">
+   627→                      <button onClick={() => setRows((p) => p.filter((x) => x.id !== r.id))} disabled={rows.length <= 2} className="text-muted-foreground hover:text-[oklch(0.5_0.2_27)] disabled:opacity-30">
+   628→                        <Trash2 className="h-3.5 w-3.5" />
+   629→                      </button>
+   630→                    </td>
+   631→                  </tr>
+   632→                );
+   633→              })}
+   634→            </tbody>
+   635→          </table>
+   636→        </div>
+   637→        <div className="mt-2">
+   638→          <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => setRows((p) => [...p, newRow()])}>
+   639→            <Plus className="h-3.5 w-3.5 mr-1.5" />
+   640→            Add station
+   641→          </Button>
+   642→        </div>
+   643→      </div>
+   644→
+   645→      <ProcessPanel
+   646→        steps={processSteps}
+   647→        intro={
+   648→          <>
+   649→            The <strong>Height of Instrument (HI)</strong> method first establishes the elevation of the instrument's line of sight, then computes each station's RL by subtracting the staff reading from HI. Below is the worked example using your first row.
+   650→          </>
+   651→        }
+   652→      />
+   653→    </div>
+   654→  );
+   655→}
+   656→
+   657→// ============ RL Calculator (single station) ============
+   658→
+   659→function RlCalculator() {
+   660→  const { toast } = useToast();
+   661→  const [bmRl, setBmRl] = useState(100);
+   662→  const [bs, setBs] = useState(1.5);
+   663→  const [fs, setFs] = useState(1.2);
+   664→
+   665→  const hi = bmRl + bs;
+   666→  const rl = hi - fs;
+   667→
+   668→  const handleImport = (sheet: ParsedSheet, file: File) => {
+   669→    if (sheet.rows.length === 0) return;
+   670→    const r = sheet.rows[0];
+   671→    const colBm = matchColumn(sheet.headers, ["benchmark", "bm rl", "bm_rl", "known rl"]);
+   672→    const colBs = matchColumn(sheet.headers, ["bs", "backsight"]);
+   673→    const colFs = matchColumn(sheet.headers, ["fs", "foresight"]);
+   674→
+   675→    if (colBm) setBmRl(toNum(r[colBm]));
+   676→    if (colBs) setBs(toNum(r[colBs]));
+   677→    if (colFs) setFs(toNum(r[colFs]));
+   678→
+   679→    toast({ title: "Imported successfully", description: `Loaded values from ${file.name}` });
+   680→  };
+   681→
+   682→  const handleDownloadTemplate = () => {
+   683→    downloadCSV("rl-calculator-template.csv", [
+   684→      ["Benchmark", "BS", "FS"],
+   685→      [100, 1.5, 1.2],
+   686→    ]);
+   687→    toast({ title: "Template downloaded", description: "Fill in your values and re-import." });
+   688→  };
+   689→
+   690→  const processSteps: ProcessStep[] = [
+   691→    {
+   692→      title: "Compute Height of Instrument (HI)",
+   693→      formula: `HI = Benchmark_RL + BS = ${bmRl} + ${bs} = ${round(hi, 3)}`,
+   694→      note: "The instrument is set up over a known benchmark. The back-sight reading on the benchmark staff gives the elevation of the line of sight.",
+   695→      result: `HI = ${round(hi, 3)}`,
+   696→    },
+   697→    {
+   698→      title: "Compute Reduced Level (RL) of the new station",
+   699→      formula: `RL = HI − FS = ${round(hi, 3)} − ${fs} = ${round(rl, 3)}`,
+   700→      note: "The fore-sight is the staff reading on the new (unknown) point. Subtracting it from HI yields the point's RL.",
+   701→      result: `RL = ${round(rl, 3)}`,
+   702→    },
+   703→  ];
+   704→
+   705→  return (
+   706→    <div className="space-y-4">
+   707→      <div className="rounded-lg border border-border bg-card p-4">
+   708→        <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+   709→          <div>
+   710→            <h3 className="text-sm font-semibold">Single-station RL</h3>
+   711→            <p className="text-xs text-muted-foreground mt-0.5">Quick RL from a benchmark and two staff readings.</p>
+   712→          </div>
+   713→          <div className="flex flex-wrap items-center gap-1.5">
+   714→            <ExcelUploadButton
+   715→              size="sm"
+   716→              onParsed={handleImport}
+   717→              onError={(m) => toast({ title: "Import failed", description: m, variant: "destructive" })}
+   718→            />
+   719→            <TemplateDownloadButton size="sm" onDownload={handleDownloadTemplate} />
+   720→          </div>
+   721→        </div>
+   722→
+   723→        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+   724→          <div>
+   725→            <FieldLabel hint="Known RL">Benchmark RL</FieldLabel>
+   726→            <Input type="number" step={0.001} value={bmRl} onChange={(e) => setBmRl(Number(e.target.value))} />
+   727→          </div>
+   728→          <div>
+   729→            <FieldLabel>Back Sight (BS)</FieldLabel>
+   730→            <Input type="number" step={0.001} value={bs} onChange={(e) => setBs(Number(e.target.value))} />
+   731→          </div>
+   732→          <div>
+   733→            <FieldLabel>Fore Sight (FS)</FieldLabel>
+   734→            <Input type="number" step={0.001} value={fs} onChange={(e) => setFs(Number(e.target.value))} />
+   735→          </div>
+   736→        </div>
+   737→
+   738→        <div className="mt-4 rounded-md border border-border bg-muted/30 p-3 text-xs font-mono text-muted-foreground">
+   739→          HI = BM_RL + BS = {bmRl} + {bs} = <span className="text-foreground font-semibold">{round(hi, 3)}</span>
+   740→          <br />
+   741→          RL = HI − FS = {round(hi, 3)} − {fs} = <span className="text-foreground font-semibold">{round(rl, 3)}</span>
+   742→        </div>
+   743→      </div>
+   744→
+   745→      <div className="grid grid-cols-1 lg:grid-cols-[1fr_1fr] gap-4">
+   746→        <div className="rounded-lg border border-border bg-card p-4">
+   747→          <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground mb-3">Result</h3>
+   748→          <div className="space-y-1">
+   749→            <ResultLine label="HI" value={round(hi, 3)} />
+   750→            <ResultLine label="New RL" value={round(rl, 3)} highlight />
+   751→          </div>
+   752→        </div>
+   753→      </div>
+   754→
+   755→      <ProcessPanel
+   756→        steps={processSteps}
+   757→        intro={
+   758→          <>
+   759→            This is the simplest levelling case — one setup, one benchmark, one unknown point. The same logic underpins both the Rise & Fall and HI methods, just repeated across many stations.
+   760→          </>
+   761→        }
+   762→      />
+   763→    </div>
+   764→  );
+   765→}
+   766→
+   767→// ============ Bearing Calculator ============
+   768→
+   769→function BearingCalculator() {
+   770→  const { toast } = useToast();
+   771→  const [b1, setB1] = useState(45);
+   772→  const [b2, setB2] = useState(135);
+   773→  const [bearingIn, setBearingIn] = useState<number | string>(125.5);
+   774→  const [convertTo, setConvertTo] = useState<"rb" | "wcb">("rb");
+   775→
+   776→  // Included angle between two WCBs (clockwise from B1 to B2)
+   777→  const includedAngle = ((b2 - b1) + 360) % 360;
+   778→
+   779→  // WCB ↔ RB (Quadrantal Bearing) conversion
+   780→  const converted = (() => {
+   781→    const wcb = ((Number(bearingIn) % 360) + 360) % 360;
+   782→    let rb = "";
+   783→    if (convertTo === "rb") {
+   784→      if (wcb <= 90) rb = `N ${round(wcb, 2)}° E`;
+   785→      else if (wcb <= 180) rb = `S ${round(180 - wcb, 2)}° E`;
+   786→      else if (wcb <= 270) rb = `S ${round(wcb - 180, 2)}° W`;
+   787→      else rb = `N ${round(360 - wcb, 2)}° W`;
+   788→      return { out: rb, label: "Quadrantal Bearing", wcb };
+   789→    } else {
+   790→      const match = bearingIn.toString().toUpperCase().match(/([NS])\s*(\d+(?:\.\d+)?)\s*([EW])/);
+   791→      if (!match) return { out: "Invalid format. Use: N 45 E", label: "WCB", wcb: NaN };
+   792→      const [, ns, angleStr, ew] = match;
+   793→      let w = parseFloat(angleStr);
+   794→      if (ns === "S") w = 180 - w;
+   795→      if (ew === "W") w = 360 - w;
+   796→      return { out: `${round(w, 2)}°`, label: "Whole Circle Bearing", wcb: w };
+   797→    }
+   798→  })();
+   799→
+   800→  const handleImport = (sheet: ParsedSheet, file: File) => {
+   801→    if (sheet.rows.length === 0) return;
+   802→    const r = sheet.rows[0];
+   803→    const colB1 = matchColumn(sheet.headers, ["b1", "wcb1", "bearing1", "wcb of line 1"]);
+   804→    const colB2 = matchColumn(sheet.headers, ["b2", "wcb2", "bearing2", "wcb of line 2"]);
+   805→
+   806→    if (colB1) setB1(toNum(r[colB1]));
+   807→    if (colB2) setB2(toNum(r[colB2]));
+   808→
+   809→    toast({ title: "Imported successfully", description: `Loaded bearings from ${file.name}` });
+   810→  };
+   811→
+   812→  const handleDownloadTemplate = () => {
+   813→    downloadCSV("bearing-template.csv", [
+   814→      ["B1", "B2"],
+   815→      [45, 135],
+   816→    ]);
+   817→    toast({ title: "Template downloaded", description: "Fill in your bearings and re-import." });
+   818→  };
+   819→
+   820→  // Determine quadrant for process step
+   821→  const quadrant =
+   822→    convertTo === "rb"
+   823→      ? (() => {
+   824→          const wcb = ((Number(bearingIn) % 360) + 360) % 360;
+   825→          if (wcb <= 90) return "NE (1st quadrant)";
+   826→          if (wcb <= 180) return "SE (2nd quadrant)";
+   827→          if (wcb <= 270) return "SW (3rd quadrant)";
+   828→          return "NW (4th quadrant)";
+   829→        })()
+   830→      : "—";
+   831→
+   832→  const processSteps: ProcessStep[] =
+   833→    convertTo === "rb"
+   834→      ? [
+   835→          {
+   836→            title: "Identify which quadrant the WCB falls in",
+   837→            formula: `WCB = ${((Number(bearingIn) % 360) + 360) % 360}°  →  ${quadrant}`,
+   838→            note: "Whole Circle Bearings are measured clockwise from North (0°) and range from 0° to 360°. Quadrantal Bearings are measured from the nearer of N or S, toward E or W.",
+   839→          },
+   840→          {
+   841→            title: "Apply the conversion rule for that quadrant",
+   842→            formula:
+   843→              quadrant.startsWith("NE")
+   844→                ? `RB = N (WCB) E = N ${round(((Number(bearingIn) % 360) + 360) % 360, 2)}° E`
+   845→                : quadrant.startsWith("SE")
+   846→                  ? `RB = S (180° − WCB) E = S ${round(180 - ((Number(bearingIn) % 360) + 360) % 360, 2)}° E`
+   847→                  : quadrant.startsWith("SW")
+   848→                    ? `RB = S (WCB − 180°) W = S ${round(((Number(bearingIn) % 360) + 360) % 360 - 180, 2)}° W`
+   849→                    : `RB = N (360° − WCB) W = N ${round(360 - ((Number(bearingIn) % 360) + 360) % 360, 2)}° W`,
+   850→            result: converted.out,
+   851→          },
+   852→        ]
+   853→      : [
+   854→          {
+   855→            title: "Parse the quadrantal bearing",
+   856→            formula: `Input: ${bearingIn}  →  parse NS, angle, EW`,
+   857→            note: "Quadrantal bearings look like N 45° E or S 30° W. The first letter (N/S) is the reference meridian; the last letter (E/W) is the direction of measurement.",
+   858→          },
+   859→          {
+   860→            title: "Convert to WCB based on quadrant",
+   861→            formula:
+   862→              (() => {
+   863→                const m = bearingIn.toString().toUpperCase().match(/([NS])\s*(\d+(?:\.\d+)?)\s*([EW])/);
+   864→                if (!m) return "Invalid input";
+   865→                const [, ns, angleStr, ew] = m;
+   866→                let w = parseFloat(angleStr);
+   867→                let step = `Start: ${ns} ${angleStr}° ${ew} → WCB = ${angleStr}°`;
+   868→                if (ns === "S") {
+   869→                  w = 180 - w;
+   870→                  step = `NS=S → WCB = 180° − ${angleStr}° = ${w}°`;
+   871→                }
+   872→                if (ew === "W") {
+   873→                  w = 360 - w;
+   874→                  step += ` → EW=W → WCB = 360° − ${w}° = ${360 - w}°`;
+   875→                }
+   876→                return step;
+   877→              })(),
+   878→            result: converted.out,
+   879→          },
+   880→        ];
+   881→
+   882→  return (
+   883→    <div className="space-y-4">
+   884→      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+   885→        <div className="rounded-lg border border-border bg-card p-4 space-y-4">
+   886→          <div className="flex items-center justify-between">
+   887→            <div>
+   888→              <h3 className="text-sm font-semibold">Included Angle between two WCBs</h3>
+   889→              <p className="text-xs text-muted-foreground mt-0.5">Clockwise interior angle between two whole-circle bearings.</p>
+   890→            </div>
+   891→            <div className="flex items-center gap-1.5">
+   892→              <ExcelUploadButton
+   893→                size="sm"
+   894→                onParsed={handleImport}
+   895→                onError={(m) => toast({ title: "Import failed", description: m, variant: "destructive" })}
+   896→              />
+   897→              <TemplateDownloadButton size="sm" onDownload={handleDownloadTemplate} />
+   898→            </div>
+   899→          </div>
+   900→          <div className="grid grid-cols-2 gap-3">
+   901→            <div>
+   902→              <FieldLabel>WCB of line 1</FieldLabel>
+   903→              <Input type="number" value={b1} onChange={(e) => setB1(Number(e.target.value))} />
+   904→            </div>
+   905→            <div>
+   906→              <FieldLabel>WCB of line 2</FieldLabel>
+   907→              <Input type="number" value={b2} onChange={(e) => setB2(Number(e.target.value))} />
+   908→            </div>
+   909→          </div>
+   910→          <div className="mt-3 rounded-md border border-primary/20 bg-primary/5 p-3 text-sm">
+   911→            Included angle = <span className="text-primary font-semibold">{round(includedAngle, 2)}°</span>
+   912→          </div>
+   913→        </div>
+   914→
+   915→        <div className="rounded-lg border border-border bg-card p-4">
+   916→          <h3 className="text-sm font-semibold mb-1">WCB ↔ Quadrantal Bearing</h3>
+   917→          <p className="text-xs text-muted-foreground mb-3">Convert between whole-circle bearing (0°–360°) and quadrantal bearing (N/S ° E/W).</p>
+   918→          <div className="flex items-center gap-1 mb-3">
+   919→            <button onClick={() => setConvertTo("rb")} className={cn("px-3 py-1 text-xs font-medium rounded", convertTo === "rb" ? "bg-muted text-foreground" : "text-muted-foreground")}>WCB → RB</button>
+   920→            <button onClick={() => setConvertTo("wcb")} className={cn("px-3 py-1 text-xs font-medium rounded", convertTo === "wcb" ? "bg-muted text-foreground" : "text-muted-foreground")}>RB → WCB</button>
+   921→          </div>
+   922→          <div className="mb-3">
+   923→            <FieldLabel hint={convertTo === "rb" ? "0–360°" : "e.g. N 45 E"}>
+   924→              {convertTo === "rb" ? "Whole Circle Bearing" : "Quadrantal Bearing"}
+   925→            </FieldLabel>
+   926→            <Input
+   927→              type={convertTo === "rb" ? "number" : "text"}
+   928→              value={bearingIn}
+   929→              onChange={(e) => setBearingIn(convertTo === "rb" ? Number(e.target.value) : e.target.value)}
+   930→            />
+   931→          </div>
+   932→          <div className="rounded-md border border-primary/20 bg-primary/5 p-3 text-sm">
+   933→            {converted.label}: <span className="text-primary font-semibold">{converted.out}</span>
+   934→          </div>
+   935→        </div>
+   936→      </div>
+   937→
+   938→      <ProcessPanel
+   939→        steps={processSteps}
+   940→        intro={
+   941→          <>
+   942→            <strong>Included angle</strong> between two lines = (WCB₂ − WCB₁) mod 360°. <strong>Quadrantal bearings</strong> are shorter to write in the field but require a quadrant letter (N/S + E/W). The conversion below shows your input's worked step.
+   943→          </>
+   944→        }
+   945→      />
+   946→    </div>
+   947→  );
+   948→}
+   949→
+   950→// ============ Shared cell input ============
+   951→
+   952→function NumCell({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+   953→  return (
+   954→    <input
+   955→      type="number"
+   956→      step={0.001}
+   957→      value={value}
+   958→      onChange={(e) => onChange(Number(e.target.value))}
+   959→      className="w-20 h-7 text-right bg-transparent text-sm outline-none rounded px-1.5 nums tabular-nums hover:bg-muted/60 focus:bg-muted focus:ring-1 focus:ring-ring"
+   960→    />
+   961→  );
+   962→}
+   963→
+   964→function round(v: number, decimals = 2): number {
+   965→  const f = Math.pow(10, decimals);
+   966→  return Math.round(v * f) / f;
+   967→}
+   968→

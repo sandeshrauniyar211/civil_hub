@@ -1,0 +1,641 @@
+     1→     1→"use client";
+     2→     2→
+     3→     3→// CivilHub — BOQ Generator (Phase 2 estimation)
+     4→     4→// Multi-section bill of quantities with rates, contingency/overhead/VAT, totals.
+     5→     5→// Save BOQs to localStorage. Excel import/export.
+     6→     6→
+     7→     7→import { useMemo, useState, useEffect } from "react";
+     8→     8→import {
+     9→     9→  Plus,
+    10→    10→  Trash2,
+    11→    11→  Save,
+    12→    12→  FolderOpen,
+    13→    13→  FileDown,
+    14→    14→  FileSpreadsheet,
+    15→    15→  Copy,
+    16→    16→  Pencil,
+    17→    17→  ChevronDown,
+    18→    18→  ChevronRight,
+    19→    19→} from "lucide-react";
+    20→    20→import { cn } from "@/lib/utils";
+    21→    21→import { Button } from "@/components/ui/button";
+    22→    22→import { Input } from "@/components/ui/input";
+    23→    23→import { useToast } from "@/hooks/use-toast";
+    24→    24→import { FieldLabel, Tag, ResultLine, Divider, EmptyState } from "../lib/ui";
+    25→    25→import { ExcelUploadButton, TemplateDownloadButton } from "../lib/excel-upload-button";
+    26→    26→import { downloadCSV, downloadXLSX, matchColumn, toNum, toStr, type ParsedSheet } from "../lib/excel";
+    27→    27→import { fmt, round, uid, type Boq, type BoqSection, type BoqItem } from "../lib/estimation-types";
+    28→    28→import {
+    29→    29→  getBoqs,
+    30→    30→  saveBoq,
+    31→    31→  deleteBoq,
+    32→    32→  useEstimationStore,
+    33→    33→} from "../lib/estimation-store";
+    34→    34→
+    35→    35→function emptyItem(): BoqItem {
+    36→    36→  return { id: uid("bi"), description: "", unit: "m³", quantity: 0, rate: 0 };
+    37→    37→}
+    38→    38→
+    39→    39→function emptySection(code = "A", title = "Earthwork"): BoqSection {
+    40→    40→  return {
+    41→    41→    id: uid("sec"),
+    42→    42→    code,
+    43→    43→    title,
+    44→    44→    items: [emptyItem()],
+    45→    45→  };
+    46→    46→}
+    47→    47→
+    48→    48→function emptyBoq(): Boq {
+    49→    49→  return {
+    50→    50→    id: uid("boq"),
+    51→    51→    name: "Untitled BOQ",
+    52→    52→    client: "",
+    53→    53→    contractor: "",
+    54→    54→    date: new Date().toISOString().slice(0, 10),
+    55→    55→    sections: [
+    56→    56→      emptySection("A", "Earthwork"),
+    57→    57→      emptySection("B", "Concrete"),
+    58→    58→      emptySection("C", "Brickwork & Masonry"),
+    59→    59→    ],
+    60→    60→    contingencyPct: 3,
+    61→    61→    overheadPct: 7,
+    62→    62→    vatPct: 13,
+    63→    63→    createdAt: Date.now(),
+    64→    64→    updatedAt: Date.now(),
+    65→    65→  };
+    66→    66→}
+    67→    67→
+    68→    68→export function BoqGenerator() {
+    69→    69→  const { toast } = useToast();
+    70→    70→  const [boqs] = useEstimationStore(getBoqs, []);
+    71→    71→  const [activeId, setActiveId] = useState<string | null>(null);
+    72→    72→  const [boq, setBoq] = useState<Boq>(emptyBoq());
+    73→    73→  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+    74→    74→  const [importedFile, setImportedFile] = useState<string | null>(null);
+    75→    75→
+    76→    76→  useEffect(() => {
+    77→    77→    if (!activeId) return;
+    78→    78→    const found = boqs.find((b) => b.id === activeId);
+    79→    79→    if (found) setBoq(found);
+    80→    80→  }, [activeId, boqs]);
+    81→    81→
+    82→    82→  // Compute amounts
+    83→    83→  const computed = useMemo(() => {
+    84→    84→    return boq.sections.map((sec) => {
+    85→    85→      const items = sec.items.map((it) => ({ ...it, amount: it.quantity * it.rate }));
+    86→    86→      const subtotal = items.reduce((s, it) => s + it.amount, 0);
+    87→    87→      return { ...sec, items, subtotal };
+    88→    88→    });
+    89→    89→  }, [boq]);
+    90→    90→
+    91→    91→  const totals = useMemo(() => {
+    92→    92→    const base = computed.reduce((s, sec) => s + sec.subtotal, 0);
+    93→    93→    const contingency = (base * boq.contingencyPct) / 100;
+    94→    94→    const overhead = (base * boq.overheadPct) / 100;
+    95→    95→    const subtotalWithAdds = base + contingency + overhead;
+    96→    96→    const vat = (subtotalWithAdds * boq.vatPct) / 100;
+    97→    97→    const grand = subtotalWithAdds + vat;
+    98→    98→    return { base, contingency, overhead, subtotalWithAdds, vat, grand };
+    99→    99→  }, [computed, boq.contingencyPct, boq.overheadPct, boq.vatPct]);
+   100→   100→
+   101→   101→  // ---- Header field updates ----
+   102→   102→  const updateBoq = (patch: Partial<Boq>) => setBoq((prev) => ({ ...prev, ...patch }));
+   103→   103→
+   104→   104→  // ---- Section operations ----
+   105→   105→  const addSection = () => {
+   106→   106→    const nextCode = String.fromCharCode(65 + boq.sections.length); // A, B, C...
+   107→   107→    setBoq((prev) => ({
+   108→   108→      ...prev,
+   109→   109→      sections: [...prev.sections, emptySection(nextCode, "New section")],
+   110→   110→    }));
+   111→   111→  };
+   112→   112→
+   113→   113→  const updateSection = (id: string, patch: Partial<BoqSection>) => {
+   114→   114→    setBoq((prev) => ({
+   115→   115→      ...prev,
+   116→   116→      sections: prev.sections.map((s) => (s.id === id ? { ...s, ...patch } : s)),
+   117→   117→    }));
+   118→   118→  };
+   119→   119→
+   120→   120→  const removeSection = (id: string) => {
+   121→   121→    setBoq((prev) => ({
+   122→   122→      ...prev,
+   123→   123→      sections: prev.sections.length <= 1 ? prev.sections : prev.sections.filter((s) => s.id !== id),
+   124→   124→    }));
+   125→   125→  };
+   126→   126→
+   127→   127→  const toggleCollapse = (id: string) => {
+   128→   128→    setCollapsed((prev) => {
+   129→   129→      const next = new Set(prev);
+   130→   130→      if (next.has(id)) next.delete(id);
+   131→   131→      else next.add(id);
+   132→   132→      return next;
+   133→   133→    });
+   134→   134→  };
+   135→   135→
+   136→   136→  // ---- Item operations ----
+   137→   137→  const addItem = (sectionId: string) => {
+   138→   138→    setBoq((prev) => ({
+   139→   139→      ...prev,
+   140→   140→      sections: prev.sections.map((s) =>
+   141→   141→        s.id === sectionId ? { ...s, items: [...s.items, emptyItem()] } : s,
+   142→   142→      ),
+   143→   143→    }));
+   144→   144→  };
+   145→   145→
+   146→   146→  const updateItem = (sectionId: string, itemId: string, patch: Partial<BoqItem>) => {
+   147→   147→    setBoq((prev) => ({
+   148→   148→      ...prev,
+   149→   149→      sections: prev.sections.map((s) =>
+   150→   150→        s.id === sectionId
+   151→   151→          ? { ...s, items: s.items.map((it) => (it.id === itemId ? { ...it, ...patch } : it)) }
+   152→   152→          : s,
+   153→   153→      ),
+   154→   154→    }));
+   155→   155→  };
+   156→   156→
+   157→   157→  const duplicateItem = (sectionId: string, itemId: string) => {
+   158→   158→    setBoq((prev) => ({
+   159→   159→      ...prev,
+   160→   160→      sections: prev.sections.map((s) => {
+   161→   161→        if (s.id !== sectionId) return s;
+   162→   162→        const idx = s.items.findIndex((it) => it.id === itemId);
+   163→   163→        if (idx < 0) return s;
+   164→   164→        const copy = { ...s.items[idx], id: uid("bi") };
+   165→   165→        const items = [...s.items];
+   166→   166→        items.splice(idx + 1, 0, copy);
+   167→   167→        return { ...s, items };
+   168→   168→      }),
+   169→   169→    }));
+   170→   170→  };
+   171→   171→
+   172→   172→  const removeItem = (sectionId: string, itemId: string) => {
+   173→   173→    setBoq((prev) => ({
+   174→   174→      ...prev,
+   175→   175→      sections: prev.sections.map((s) =>
+   176→   176→        s.id === sectionId
+   177→   177→          ? { ...s, items: s.items.length <= 1 ? s.items : s.items.filter((it) => it.id !== itemId) }
+   178→   178→          : s,
+   179→   179→      ),
+   180→   180→    }));
+   181→   181→  };
+   182→   182→
+   183→   183→  // ---- Save / Load ----
+   184→   184→  const handleSave = () => {
+   185→   185→    if (!boq.name.trim()) {
+   186→   186→      toast({ title: "BOQ needs a name", variant: "destructive" });
+   187→   187→      return;
+   188→   188→    }
+   189→   189→    const toSave = { ...boq, updatedAt: Date.now() };
+   190→   190→    saveBoq(toSave);
+   191→   191→    setActiveId(toSave.id);
+   192→   192→    toast({ title: "Saved", description: `BOQ "${toSave.name}" saved locally.` });
+   193→   193→  };
+   194→   194→
+   195→   195→  const handleNew = () => {
+   196→   196→    setActiveId(null);
+   197→   197→    setBoq(emptyBoq());
+   198→   198→    setImportedFile(null);
+   199→   199→  };
+   200→   200→
+   201→   201→  const handleDelete = (id: string) => {
+   202→   202→    deleteBoq(id);
+   203→   203→    if (activeId === id) handleNew();
+   204→   204→    toast({ title: "BOQ deleted" });
+   205→   205→  };
+   206→   206→
+   207→   207→  // ---- Excel import (single flat sheet) ----
+   208→   208→  const handleImport = (sheet: ParsedSheet, file: File) => {
+   209→   209→    const colSection = matchColumn(sheet.headers, ["section", "section code", "sec"]);
+   210→   210→    const colSr = matchColumn(sheet.headers, ["sr", "sr.no", "no", "sno"]);
+   211→   211→    const colDesc = matchColumn(sheet.headers, ["description", "item", "particulars"]);
+   212→   212→    const colUnit = matchColumn(sheet.headers, ["unit"]);
+   213→   213→    const colQty = matchColumn(sheet.headers, ["qty", "quantity"]);
+   214→   214→    const colRate = matchColumn(sheet.headers, ["rate", "unit rate"]);
+   215→   215→
+   216→   216→    // Group rows by section
+   217→   217→    const sectionMap = new Map<string, BoqItem[]>();
+   218→   218→    let currentSection = "A · General";
+   219→   219→    for (const r of sheet.rows) {
+   220→   220→      const secVal = colSection ? toStr(r[colSection]) : "";
+   221→   221→      if (secVal) currentSection = secVal;
+   222→   222→      const desc = colDesc ? toStr(r[colDesc]) : "";
+   223→   223→      if (!desc) continue; // skip blank rows
+   224→   224→      const item: BoqItem = {
+   225→   225→        id: uid("bi"),
+   226→   226→        description: desc,
+   227→   227→        unit: colUnit ? toStr(r[colUnit]) || "nos" : "nos",
+   228→   228→        quantity: colQty ? toNum(r[colQty]) : 0,
+   229→   229→        rate: colRate ? toNum(r[colRate]) : 0,
+   230→   230→      };
+   231→   231→      const list = sectionMap.get(currentSection) ?? [];
+   232→   232→      list.push(item);
+   233→   233→      sectionMap.set(currentSection, list);
+   234→   234→    }
+   235→   235→
+   236→   236→    if (sectionMap.size === 0) {
+   237→   237→      toast({ title: "Import failed", description: "No valid rows found.", variant: "destructive" });
+   238→   238→      return;
+   239→   239→    }
+   240→   240→
+   241→   241→    const sections: BoqSection[] = Array.from(sectionMap.entries()).map(([key, items], idx) => {
+   242→   242→      const [code, ...titleParts] = key.split(/[·\.\-:]/);
+   243→   243→      return {
+   244→   244→        id: uid("sec"),
+   245→   245→        code: code.trim() || String.fromCharCode(65 + idx),
+   246→   246→        title: titleParts.join(" ").trim() || key,
+   247→   247→        items,
+   248→   248→      };
+   249→   249→    });
+   250→   250→
+   251→   251→    setBoq((prev) => ({ ...prev, sections, name: file.name.replace(/\.[^.]+$/, "") }));
+   252→   252→    setImportedFile(file.name);
+   253→   253→    setActiveId(null);
+   254→   254→    toast({ title: "Imported", description: `${sections.length} sections loaded from ${file.name}` });
+   255→   255→  };
+   256→   256→
+   257→   257→  const handleDownloadTemplate = () => {
+   258→   258→    downloadCSV("boq-template.csv", [
+   259→   259→      ["Section", "Description", "Unit", "Quantity", "Rate"],
+   260→   260→      ["A · Earthwork", "Excavation in ordinary soil", "m³", 50, 350],
+   261→   261→      ["A · Earthwork", "Refilling with selected excavated soil", "m³", 20, 200],
+   262→   262→      ["B · Concrete", "PCC 1:4:8 in foundation", "m³", 10, 6500],
+   263→   263→      ["B · Concrete", "RCC M20 in footing", "m³", 15, 12000],
+   264→   264→      ["C · Brickwork", "Brickwork in 1:6 CM", "m³", 25, 9000],
+   265→   265→    ]);
+   266→   266→    toast({ title: "Template downloaded" });
+   267→   267→  };
+   268→   268→
+   269→   269→  const handleExportCSV = () => {
+   270→   270→    const rows: (string | number)[][] = [["BOQ Name:", boq.name]];
+   271→   271→    rows.push(["Client:", boq.client]);
+   272→   272→    rows.push(["Contractor:", boq.contractor]);
+   273→   273→    rows.push(["Date:", boq.date]);
+   274→   274→    rows.push([]);
+   275→   275→    rows.push(["Section", "Sr.No", "Description", "Unit", "Quantity", "Rate", "Amount"]);
+   276→   276→
+   277→   277→    let sr = 1;
+   278→   278→    for (const sec of computed) {
+   279→   279→      rows.push([`${sec.code} · ${sec.title}`, "", "", "", "", "", ""]);
+   280→   280→      for (const it of sec.items) {
+   281→   281→        rows.push([`${sec.code} · ${sec.title}`, sr, it.description, it.unit, it.quantity, it.rate, round(it.amount, 2)]);
+   282→   282→        sr += 1;
+   283→   283→      }
+   284→   284→      rows.push(["", "", `Subtotal — ${sec.title}`, "", "", "", round(sec.subtotal, 2)]);
+   285→   285→      rows.push([]);
+   286→   286→    }
+   287→   287→
+   288→   288→    rows.push([]);
+   289→   289→    rows.push(["", "", "Base total", "", "", "", round(totals.base, 2)]);
+   290→   290→    rows.push(["", "", `Contingency (${boq.contingencyPct}%)`, "", "", "", round(totals.contingency, 2)]);
+   291→   291→    rows.push(["", "", `Overhead (${boq.overheadPct}%)`, "", "", "", round(totals.overhead, 2)]);
+   292→   292→    rows.push(["", "", "Subtotal", "", "", "", round(totals.subtotalWithAdds, 2)]);
+   293→   293→    rows.push(["", "", `VAT (${boq.vatPct}%)`, "", "", "", round(totals.vat, 2)]);
+   294→   294→    rows.push(["", "", "GRAND TOTAL", "", "", "", round(totals.grand, 2)]);
+   295→   295→
+   296→   296→    downloadCSV(`boq-${boq.name.replace(/\s+/g, "-").toLowerCase()}.csv`, rows);
+   297→   297→    toast({ title: "Exported", description: "BOQ saved as CSV." });
+   298→   298→  };
+   299→   299→
+   300→   300→  const handleExportXLSX = () => {
+   301→   301→    const header: (string | number)[][] = [
+   302→   302→      ["Bill of Quantities (BOQ)"],
+   303→   303→      ["Project:", boq.name, "", "Date:", boq.date],
+   304→   304→      ["Client:", boq.client, "", "Contractor:", boq.contractor],
+   305→   305→      [],
+   306→   306→      ["Section", "Sr.No", "Description", "Unit", "Quantity", "Rate", "Amount"],
+   307→   307→    ];
+   308→   308→    const body: (string | number)[][] = [];
+   309→   309→    let sr = 1;
+   310→   310→    for (const sec of computed) {
+   311→   311→      body.push([`${sec.code} · ${sec.title}`, "", "", "", "", "", ""]);
+   312→   312→      for (const it of sec.items) {
+   313→   313→        body.push([`${sec.code} · ${sec.title}`, sr, it.description, it.unit, it.quantity, it.rate, +round(it.amount, 2).toFixed(2)]);
+   314→   314→        sr += 1;
+   315→   315→      }
+   316→   316→      body.push(["", "", `Subtotal — ${sec.title}`, "", "", "", +round(sec.subtotal, 2).toFixed(2)]);
+   317→   317→      body.push([]);
+   318→   318→    }
+   319→   319→    body.push([]);
+   320→   320→    body.push(["", "", "Base total", "", "", "", +round(totals.base, 2).toFixed(2)]);
+   321→   321→    body.push(["", "", `Contingency (${boq.contingencyPct}%)`, "", "", "", +round(totals.contingency, 2).toFixed(2)]);
+   322→   322→    body.push(["", "", `Overhead (${boq.overheadPct}%)`, "", "", "", +round(totals.overhead, 2).toFixed(2)]);
+   323→   323→    body.push(["", "", "Subtotal", "", "", "", +round(totals.subtotalWithAdds, 2).toFixed(2)]);
+   324→   324→    body.push(["", "", `VAT (${boq.vatPct}%)`, "", "", "", +round(totals.vat, 2).toFixed(2)]);
+   325→   325→    body.push(["", "", "GRAND TOTAL", "", "", "", +round(totals.grand, 2).toFixed(2)]);
+   326→   326→
+   327→   327→    downloadXLSX(`boq-${boq.name.replace(/\s+/g, "-").toLowerCase()}.xlsx`, [...header, ...body], "BOQ");
+   328→   328→    toast({ title: "Exported", description: "BOQ saved as XLSX." });
+   329→   329→  };
+   330→   330→
+   331→   331→  return (
+   332→   332→    <div className="space-y-4">
+   333→   333→      {/* BOQ header + actions */}
+   334→   334→      <div className="rounded-lg border border-border bg-card p-4">
+   335→   335→        <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+   336→   336→          <div className="flex-1 min-w-[200px]">
+   337→   337→            <FieldLabel hint="Project name">BOQ name</FieldLabel>
+   338→   338→            <Input value={boq.name} onChange={(e) => updateBoq({ name: e.target.value })} className="h-9" />
+   339→   339→          </div>
+   340→   340→          <div className="flex flex-wrap items-center gap-1.5">
+   341→   341→            <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={handleNew}>
+   342→   342→              <Plus className="h-3.5 w-3.5 mr-1" />
+   343→   343→              New
+   344→   344→            </Button>
+   345→   345→            <Button size="sm" variant="outline" className="h-8 text-xs" onClick={handleSave}>
+   346→   346→              <Save className="h-3.5 w-3.5 mr-1" />
+   347→   347→              Save
+   348→   348→            </Button>
+   349→   349→            <ExcelUploadButton
+   350→   350→              size="sm"
+   351→   351→              onParsed={handleImport}
+   352→   352→              onError={(m) => toast({ title: "Import failed", description: m, variant: "destructive" })}
+   353→   353→            />
+   354→   354→            <TemplateDownloadButton size="sm" onDownload={handleDownloadTemplate} />
+   355→   355→            <Button size="sm" variant="outline" className="h-8 text-xs" onClick={handleExportCSV}>
+   356→   356→              <FileDown className="h-3 w-3 mr-1.5" />
+   357→   357→              CSV
+   358→   358→            </Button>
+   359→   359→            <Button size="sm" variant="outline" className="h-8 text-xs" onClick={handleExportXLSX}>
+   360→   360→              <FileDown className="h-3 w-3 mr-1.5" />
+   361→   361→              XLSX
+   362→   362→            </Button>
+   363→   363→          </div>
+   364→   364→        </div>
+   365→   365→
+   366→   366→        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+   367→   367→          <div>
+   368→   368→            <FieldLabel>Client</FieldLabel>
+   369→   369→            <Input value={boq.client} onChange={(e) => updateBoq({ client: e.target.value })} className="h-9" placeholder="Client name" />
+   370→   370→          </div>
+   371→   371→          <div>
+   372→   372→            <FieldLabel>Contractor</FieldLabel>
+   373→   373→            <Input value={boq.contractor} onChange={(e) => updateBoq({ contractor: e.target.value })} className="h-9" placeholder="Contractor name" />
+   374→   374→          </div>
+   375→   375→          <div>
+   376→   376→            <FieldLabel>Date</FieldLabel>
+   377→   377→            <Input type="date" value={boq.date} onChange={(e) => updateBoq({ date: e.target.value })} className="h-9" />
+   378→   378→          </div>
+   379→   379→        </div>
+   380→   380→
+   381→   381→        {importedFile && (
+   382→   382→          <div className="mt-3 rounded-md border border-primary/20 bg-primary/5 p-2.5 text-xs">
+   383→   383→            <div className="flex items-center justify-between">
+   384→   384→              <span>
+   385→   385→                <FileSpreadsheet className="h-3 w-3 inline mr-1" />
+   386→   386→                Imported from <strong>{importedFile}</strong>
+   387→   387→              </span>
+   388→   388→              <button onClick={() => setImportedFile(null)} className="text-muted-foreground hover:text-foreground">
+   389→   389→                dismiss
+   390→   390→              </button>
+   391→   391→            </div>
+   392→   392→          </div>
+   393→   393→        )}
+   394→   394→      </div>
+   395→   395→
+   396→   396→      {/* Saved BOQs */}
+   397→   397→      {boqs.length > 0 && (
+   398→   398→        <div className="rounded-lg border border-border bg-card p-4">
+   399→   399→          <div className="flex items-center gap-2 mb-3">
+   400→   400→            <FolderOpen className="h-3.5 w-3.5 text-muted-foreground" />
+   401→   401→            <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Saved BOQs</h3>
+   402→   402→            <Tag tone="neutral">{boqs.length}</Tag>
+   403→   403→          </div>
+   404→   404→          <div className="space-y-1">
+   405→   405→            {boqs.map((b) => (
+   406→   406→              <div
+   407→   407→                key={b.id}
+   408→   408→                className={cn(
+   409→   409→                  "flex items-center gap-3 px-2 py-1.5 rounded-md",
+   410→   410→                  activeId === b.id ? "bg-primary/5 border border-primary/20" : "hover:bg-muted/50",
+   411→   411→                )}
+   412→   412→              >
+   413→   413→                <button
+   414→   414→                  onClick={() => setActiveId(b.id)}
+   415→   415→                  className="flex-1 flex items-center gap-3 text-left min-w-0"
+   416→   416→                >
+   417→   417→                  <Pencil className="h-3 w-3 text-muted-foreground shrink-0" />
+   418→   418→                  <div className="flex-1 min-w-0">
+   419→   419→                    <div className="text-sm font-medium truncate">{b.name}</div>
+   420→   420→                    <div className="text-[11px] text-muted-foreground">
+   421→   421→                      {b.sections.length} sections · {b.sections.reduce((s, sec) => s + sec.items.length, 0)} items · {new Date(b.updatedAt).toLocaleDateString()}
+   422→   422→                    </div>
+   423→   423→                  </div>
+   424→   424→                </button>
+   425→   425→                <button
+   426→   426→                  onClick={() => handleDelete(b.id)}
+   427→   427→                  className="text-muted-foreground hover:text-[oklch(0.5_0.2_27)] text-xs px-1.5"
+   428→   428→                  aria-label="Delete"
+   429→   429→                >
+   430→   430→                  <Trash2 className="h-3.5 w-3.5" />
+   431→   431→                </button>
+   432→   432→              </div>
+   433→   433→            ))}
+   434→   434→          </div>
+   435→   435→        </div>
+   436→   436→      )}
+   437→   437→
+   438→   438→      {/* Sections */}
+   439→   439→      <div className="space-y-3">
+   440→   440→        {computed.map((sec) => {
+   441→   441→          const isCollapsed = collapsed.has(sec.id);
+   442→   442→          return (
+   443→   443→            <div key={sec.id} className="rounded-lg border border-border bg-card overflow-hidden">
+   444→   444→              {/* Section header */}
+   445→   445→              <div className="flex items-center gap-2 px-4 py-2.5 bg-muted/30 border-b border-border">
+   446→   446→                <button
+   447→   447→                  onClick={() => toggleCollapse(sec.id)}
+   448→   448→                  className="text-muted-foreground hover:text-foreground"
+   449→   449→                  aria-label={isCollapsed ? "Expand" : "Collapse"}
+   450→   450→                >
+   451→   451→                  {isCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+   452→   452→                </button>
+   453→   453→                <input
+   454→   454→                  value={sec.code}
+   455→   455→                  onChange={(e) => updateSection(sec.id, { code: e.target.value })}
+   456→   456→                  className="w-10 h-7 text-sm font-semibold bg-transparent outline-none rounded px-1 hover:bg-muted/60 focus:bg-muted text-center"
+   457→   457→                  placeholder="A"
+   458→   458→                />
+   459→   459→                <span className="text-muted-foreground">·</span>
+   460→   460→                <input
+   461→   461→                  value={sec.title}
+   462→   462→                  onChange={(e) => updateSection(sec.id, { title: e.target.value })}
+   463→   463→                  className="flex-1 h-7 text-sm font-medium bg-transparent outline-none rounded px-2 hover:bg-muted/60 focus:bg-muted"
+   464→   464→                  placeholder="Section title"
+   465→   465→                />
+   466→   466→                <Tag tone="neutral">{sec.items.length} items</Tag>
+   467→   467→                <span className="text-sm font-semibold nums tabular-nums min-w-[100px] text-right">
+   468→   468→                  {fmt(sec.subtotal, 2)}
+   469→   469→                </span>
+   470→   470→                <button
+   471→   471→                  onClick={() => removeSection(sec.id)}
+   472→   472→                  disabled={boq.sections.length <= 1}
+   473→   473→                  className="text-muted-foreground hover:text-[oklch(0.5_0.2_27)] disabled:opacity-30 p-1"
+   474→   474→                  aria-label="Remove section"
+   475→   475→                >
+   476→   476→                  <Trash2 className="h-3.5 w-3.5" />
+   477→   477→                </button>
+   478→   478→              </div>
+   479→   479→
+   480→   480→              {/* Items table */}
+   481→   481→              {!isCollapsed && (
+   482→   482→                <div className="overflow-x-auto scrollbar-thin">
+   483→   483→                  <table className="w-full text-sm min-w-[800px]">
+   484→   484→                    <thead className="bg-muted/20 text-[11px] text-muted-foreground">
+   485→   485→                      <tr>
+   486→   486→                        <th className="text-left font-medium px-3 py-1.5 w-10">Sr.</th>
+   487→   487→                        <th className="text-left font-medium px-2 py-1.5 min-w-[300px]">Description</th>
+   488→   488→                        <th className="text-left font-medium px-2 py-1.5 w-20">Unit</th>
+   489→   489→                        <th className="text-right font-medium px-2 py-1.5 w-24">Qty</th>
+   490→   490→                        <th className="text-right font-medium px-2 py-1.5 w-28">Rate</th>
+   491→   491→                        <th className="text-right font-medium px-2 py-1.5 w-28">Amount</th>
+   492→   492→                        <th className="w-16 px-1 py-1.5"></th>
+   493→   493→                      </tr>
+   494→   494→                    </thead>
+   495→   495→                    <tbody>
+   496→   496→                      {sec.items.map((it, idx) => (
+   497→   497→                        <tr key={it.id} className="border-t border-border hover:bg-muted/20 align-top">
+   498→   498→                          <td className="px-3 py-1.5 text-muted-foreground nums tabular-nums">{idx + 1}</td>
+   499→   499→                          <td className="px-2 py-1.5">
+   500→   500→                            <input
+   501→   501→                              value={it.description}
+   502→   502→                              onChange={(e) => updateItem(sec.id, it.id, { description: e.target.value })}
+   503→   503→                              placeholder="e.g. RCC M20 in footing"
+   504→   504→                              className="w-full bg-transparent text-sm outline-none rounded px-1.5 py-0.5 hover:bg-muted/60 focus:bg-muted"
+   505→   505→                            />
+   506→   506→                          </td>
+   507→   507→                          <td className="px-2 py-1.5">
+   508→   508→                            <input
+   509→   509→                              value={it.unit}
+   510→   510→                              onChange={(e) => updateItem(sec.id, it.id, { unit: e.target.value })}
+   511→   511→                              className="w-full h-7 bg-transparent text-sm outline-none rounded px-1.5 hover:bg-muted/60 focus:bg-muted"
+   512→   512→                            />
+   513→   513→                          </td>
+   514→   514→                          <td className="px-1 py-1.5">
+   515→   515→                            <NumCell value={it.quantity} onChange={(v) => updateItem(sec.id, it.id, { quantity: v })} />
+   516→   516→                          </td>
+   517→   517→                          <td className="px-1 py-1.5">
+   518→   518→                            <NumCell value={it.rate} onChange={(v) => updateItem(sec.id, it.id, { rate: v })} />
+   519→   519→                          </td>
+   520→   520→                          <td className="px-2 py-1.5 text-right nums tabular-nums font-medium">
+   521→   521→                            {fmt(it.quantity * it.rate, 2)}
+   522→   522→                          </td>
+   523→   523→                          <td className="px-1 py-1.5">
+   524→   524→                            <div className="flex items-center gap-0.5">
+   525→   525→                              <button
+   526→   526→                                onClick={() => duplicateItem(sec.id, it.id)}
+   527→   527→                                className="text-muted-foreground hover:text-foreground p-1"
+   528→   528→                                aria-label="Duplicate"
+   529→   529→                              >
+   530→   530→                                <Copy className="h-3 w-3" />
+   531→   531→                              </button>
+   532→   532→                              <button
+   533→   533→                                onClick={() => removeItem(sec.id, it.id)}
+   534→   534→                                disabled={sec.items.length <= 1}
+   535→   535→                                className="text-muted-foreground hover:text-[oklch(0.5_0.2_27)] disabled:opacity-30 p-1"
+   536→   536→                                aria-label="Remove"
+   537→   537→                              >
+   538→   538→                                <Trash2 className="h-3.5 w-3.5" />
+   539→   539→                              </button>
+   540→   540→                            </div>
+   541→   541→                          </td>
+   542→   542→                        </tr>
+   543→   543→                      ))}
+   544→   544→                    </tbody>
+   545→   545→                    <tfoot className="bg-muted/30 text-xs font-medium border-t border-border">
+   546→   546→                      <tr>
+   547→   547→                        <td colSpan={5} className="px-3 py-2 text-right text-muted-foreground">
+   548→   548→                          Subtotal — {sec.title}
+   549→   549→                        </td>
+   550→   550→                        <td className="px-2 py-2 text-right nums tabular-nums font-semibold text-primary">
+   551→   551→                          {fmt(sec.subtotal, 2)}
+   552→   552→                        </td>
+   553→   553→                        <td></td>
+   554→   554→                      </tr>
+   555→   555→                    </tfoot>
+   556→   556→                  </table>
+   557→   557→                  <div className="px-3 py-2 border-t border-border">
+   558→   558→                    <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => addItem(sec.id)}>
+   559→   559→                      <Plus className="h-3 w-3 mr-1" />
+   560→   560→                      Add item
+   561→   561→                    </Button>
+   562→   562→                  </div>
+   563→   563→                </div>
+   564→   564→              )}
+   565→   565→            </div>
+   566→   566→          );
+   567→   567→        })}
+   568→   568→
+   569→   569→        <Button size="sm" variant="outline" className="h-9 text-xs" onClick={addSection}>
+   570→   570→          <Plus className="h-3.5 w-3.5 mr-1.5" />
+   571→   571→          Add section
+   572→   572→        </Button>
+   573→   573→      </div>
+   574→   574→
+   575→   575→      {/* Grand total summary */}
+   576→   576→      <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
+   577→   577→        <div className="rounded-lg border border-border bg-card p-4">
+   578→   578→          <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground mb-3">Bill summary</h3>
+   579→   579→          <div className="space-y-1">
+   580→   580→            <ResultLine label="Base total (all sections)" value={fmt(totals.base, 2)} />
+   581→   581→            <ResultLine label={`Contingency (${boq.contingencyPct}%)`} value={fmt(totals.contingency, 2)} />
+   582→   582→            <ResultLine label={`Overhead (${boq.overheadPct}%)`} value={fmt(totals.overhead, 2)} />
+   583→   583→            <Divider />
+   584→   584→            <ResultLine label="Subtotal (before tax)" value={fmt(totals.subtotalWithAdds, 2)} />
+   585→   585→            <ResultLine label={`VAT (${boq.vatPct}%)`} value={fmt(totals.vat, 2)} />
+   586→   586→            <Divider />
+   587→   587→            <ResultLine label="GRAND TOTAL" value={fmt(totals.grand, 2)} highlight />
+   588→   588→          </div>
+   589→   589→        </div>
+   590→   590→
+   591→   591→        <div className="rounded-lg border border-border bg-card p-4">
+   592→   592→          <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground mb-3">Adjustments</h3>
+   593→   593→          <div className="space-y-3">
+   594→   594→            <div>
+   595→   595→              <FieldLabel hint="%">Contingency</FieldLabel>
+   596→   596→              <Input
+   597→   597→                type="number"
+   598→   598→                value={boq.contingencyPct}
+   599→   599→                onChange={(e) => updateBoq({ contingencyPct: Number(e.target.value) })}
+   600→   600→                className="h-9"
+   601→   601→              />
+   602→   602→            </div>
+   603→   603→            <div>
+   604→   604→              <FieldLabel hint="%">Overhead</FieldLabel>
+   605→   605→              <Input
+   606→   606→                type="number"
+   607→   607→                value={boq.overheadPct}
+   608→   608→                onChange={(e) => updateBoq({ overheadPct: Number(e.target.value) })}
+   609→   609→                className="h-9"
+   610→   610→              />
+   611→   611→            </div>
+   612→   612→            <div>
+   613→   613→              <FieldLabel hint="%">VAT</FieldLabel>
+   614→   614→              <Input
+   615→   615→                type="number"
+   616→   616→                value={boq.vatPct}
+   617→   617→                onChange={(e) => updateBoq({ vatPct: Number(e.target.value) })}
+   618→   618→                className="h-9"
+   619→   619→              />
+   620→   620→            </div>
+   621→   621→          </div>
+   622→   622→        </div>
+   623→   623→      </div>
+   624→   624→    </div>
+   625→   625→  );
+   626→   626→}
+   627→   627→
+   628→   628→// ============ Small numeric input cell ============
+   629→   629→
+   630→   630→function NumCell({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+   631→   631→  return (
+   632→   632→    <input
+   633→   633→      type="number"
+   634→   634→      step={0.01}
+   635→   635→      value={value}
+   636→   636→      onChange={(e) => onChange(Number(e.target.value))}
+   637→   637→      className="w-20 h-7 text-right bg-transparent text-sm outline-none rounded px-1.5 nums tabular-nums hover:bg-muted/60 focus:bg-muted focus:ring-1 focus:ring-ring"
+   638→   638→    />
+   639→   639→  );
+   640→   640→}
+   641→   641→

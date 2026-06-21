@@ -22,6 +22,7 @@ import { useToast } from "@/hooks/use-toast";
 import { FieldLabel, Tag, ResultLine, Divider, EmptyState } from "../lib/ui";
 import { ExcelUploadButton, TemplateDownloadButton } from "../lib/excel-upload-button";
 import { downloadCSV, downloadXLSX, matchColumn, toNum, toStr, type ParsedSheet } from "../lib/excel";
+import { ProcessPanel, type ProcessStep } from "../lib/process-panel";
 import {
   computeQty,
   fmt,
@@ -479,6 +480,52 @@ export function QuantityTakeoff() {
           </table>
         </div>
       </div>
+
+      {/* Process panel — how a single item's quantity is computed (uses first non-empty item) */}
+      {(() => {
+        const sample = computed.find((c) => c.length > 0 || c.width > 0 || c.height > 0 || c.count > 0) ?? computed[0];
+        if (!sample) return null;
+        const steps: ProcessStep[] = [
+          {
+            title: `Pick the right formula for the trade — ${TRADE_LABELS[sample.trade]}`,
+            formula: `Trade "${sample.trade}" → unit = ${sample.unit} → formula = ${FORMULA_LABELS[sample.formula]}`,
+            note: "Volume trades (concrete, brickwork, earthwork) use L×W×H×N. Area trades (plaster, flooring, painting) use L×W×N. Circular columns use π/4×d²×h×N where W is the diameter. Count-only items (doors, windows, fixtures) use N.",
+          },
+          {
+            title: "Substitute the dimensions into the formula",
+            formula:
+              sample.formula === "L×W×H×N"
+                ? `${sample.length} × ${sample.width} × ${sample.height} × ${sample.count}`
+                : sample.formula === "L×W×N"
+                  ? `${sample.length} × ${sample.width} × ${sample.count}`
+                  : sample.formula === "L×N"
+                    ? `${sample.length} × ${sample.count}`
+                    : sample.formula === "π/4×d²×h×N"
+                      ? `π/4 × ${sample.width}² × ${sample.height} × ${sample.count}`
+                      : `${sample.count}`,
+            note: "All dimensions are in metres (or the unit shown in the column header). N is the count of identical members.",
+          },
+          {
+            title: "Compute the quantity",
+            formula: `= ${round(computeQty(sample), 4)} ${sample.unit}`,
+            result: `Quantity = ${fmt(sample.qty, 3)} ${sample.unit}`,
+            note: "This is the quantity that flows into the BOQ for this item. The summary above aggregates all items by trade when their units match.",
+          },
+        ];
+        return (
+          <ProcessPanel
+            intro={
+              <>
+                Each takeoff row computes its quantity from <strong>dimensions</strong> and a{" "}
+                <strong>formula</strong>. The example below uses{" "}
+                <strong>{sample.description || "your first item"}</strong> ({TRADE_LABELS[sample.trade]}) —
+                edit any cell in the table above and these numbers update live.
+              </>
+            }
+            steps={steps}
+          />
+        );
+      })()}
 
       {/* Summary by trade */}
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">

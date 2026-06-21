@@ -16,6 +16,9 @@ import {
   Pencil,
   ChevronDown,
   ChevronRight,
+  FileText,
+  Sparkles,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -24,6 +27,7 @@ import { useToast } from "@/hooks/use-toast";
 import { FieldLabel, Tag, ResultLine, Divider, EmptyState } from "../lib/ui";
 import { ExcelUploadButton, TemplateDownloadButton } from "../lib/excel-upload-button";
 import { downloadCSV, downloadXLSX, matchColumn, toNum, toStr, type ParsedSheet } from "../lib/excel";
+import { ProcessPanel, type ProcessStep } from "../lib/process-panel";
 import { fmt, round, uid, type Boq, type BoqSection, type BoqItem } from "../lib/estimation-types";
 import {
   getBoqs,
@@ -31,6 +35,8 @@ import {
   deleteBoq,
   useEstimationStore,
 } from "../lib/estimation-store";
+import { BOQ_TEMPLATES } from "../lib/boq-templates";
+import { printBoqAsPdf, type PdfBoq, type PdfSection } from "../lib/pdf-export";
 
 function emptyItem(): BoqItem {
   return { id: uid("bi"), description: "", unit: "m³", quantity: 0, rate: 0 };
@@ -72,6 +78,7 @@ export function BoqGenerator() {
   const [boq, setBoq] = useState<Boq>(emptyBoq());
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [importedFile, setImportedFile] = useState<string | null>(null);
+  const [showTemplatePicker, setShowTemplatePicker] = useState(false);
 
   useEffect(() => {
     if (!activeId) return;
@@ -202,6 +209,72 @@ export function BoqGenerator() {
     deleteBoq(id);
     if (activeId === id) handleNew();
     toast({ title: "BOQ deleted" });
+  };
+
+  // ---- Template loading ----
+  const handleLoadTemplate = (templateId: string) => {
+    const tpl = BOQ_TEMPLATES.find((t) => t.id === templateId);
+    if (!tpl) return;
+    const fresh = tpl.builder();
+    setBoq(fresh);
+    setActiveId(null);
+    setImportedFile(null);
+    setShowTemplatePicker(false);
+    toast({
+      title: "Template loaded",
+      description: `${tpl.name} — ${fresh.sections.length} sections, ${fresh.sections.reduce(
+        (s, sec) => s + sec.items.length,
+        0,
+      )} items. Adjust quantities & rates to your project.`,
+    });
+  };
+
+  // ---- PDF export ----
+  const handleExportPDF = () => {
+    // Build the PDF-friendly structure from the live computed BOQ
+    let sr = 1;
+    const pdfSections: PdfSection[] = computed.map((sec) => {
+      const items = sec.items.map((it) => {
+        const out = {
+          sr: sr++,
+          description: it.description,
+          unit: it.unit,
+          quantity: it.quantity,
+          rate: it.rate,
+          amount: round(it.quantity * it.rate, 2),
+        };
+        return out;
+      });
+      return {
+        code: sec.code,
+        title: sec.title,
+        items,
+        subtotal: round(sec.subtotal, 2),
+      };
+    });
+
+    const doc: PdfBoq = {
+      name: boq.name,
+      client: boq.client,
+      contractor: boq.contractor,
+      date: boq.date,
+      sections: pdfSections,
+      base: round(totals.base, 2),
+      contingencyPct: boq.contingencyPct,
+      contingency: round(totals.contingency, 2),
+      overheadPct: boq.overheadPct,
+      overhead: round(totals.overhead, 2),
+      subtotalWithAdds: round(totals.subtotalWithAdds, 2),
+      vatPct: boq.vatPct,
+      vat: round(totals.vat, 2),
+      grand: round(totals.grand, 2),
+    };
+
+    printBoqAsPdf(doc);
+    toast({
+      title: "Print dialog opened",
+      description: "Choose 'Save as PDF' as the destination to download your BOQ.",
+    });
   };
 
   // ---- Excel import (single flat sheet) ----
@@ -342,6 +415,15 @@ export function BoqGenerator() {
               <Plus className="h-3.5 w-3.5 mr-1" />
               New
             </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 text-xs border-primary/30 text-primary hover:bg-primary/5"
+              onClick={() => setShowTemplatePicker(true)}
+            >
+              <Sparkles className="h-3.5 w-3.5 mr-1" />
+              Templates
+            </Button>
             <Button size="sm" variant="outline" className="h-8 text-xs" onClick={handleSave}>
               <Save className="h-3.5 w-3.5 mr-1" />
               Save
@@ -357,8 +439,17 @@ export function BoqGenerator() {
               CSV
             </Button>
             <Button size="sm" variant="outline" className="h-8 text-xs" onClick={handleExportXLSX}>
-              <FileDown className="h-3 w-3 mr-1.5" />
+              <FileSpreadsheet className="h-3 w-3 mr-1.5" />
               XLSX
+            </Button>
+            <Button
+              size="sm"
+              variant="default"
+              className="h-8 text-xs bg-primary text-primary-foreground hover:bg-primary/90"
+              onClick={handleExportPDF}
+            >
+              <FileText className="h-3 w-3 mr-1.5" />
+              PDF
             </Button>
           </div>
         </div>
@@ -572,6 +663,77 @@ export function BoqGenerator() {
         </Button>
       </div>
 
+      {/* Process panel — how the grand total is built up */}
+      <ProcessPanel
+        intro={
+          <>
+            A BOQ grand total is built up in layers: <strong>line amounts</strong> →{" "}
+            <strong>section subtotals</strong> → <strong>base total</strong> → add{" "}
+            <strong>contingency</strong> and <strong>overhead</strong> → apply <strong>VAT</strong>.
+            The numbers below are live — change any rate, quantity, or percentage above and these
+            update immediately.
+          </>
+        }
+        steps={(() => {
+          const steps: ProcessStep[] = [];
+
+          // Step 1: per-line amount
+          const sampleSection = computed[0];
+          const sampleItem = sampleSection?.items[0];
+          steps.push({
+            title: "Each line: amount = quantity × rate",
+            formula:
+              sampleItem != null
+                ? `${sampleItem.quantity} ${sampleItem.unit} × ${sampleItem.rate} = ${fmt(sampleItem.amount, 2)}`
+                : "Add a line item to see the calculation",
+            result:
+              sampleItem != null
+                ? `Line amount = ${fmt(sampleItem.amount, 2)}`
+                : "—",
+            note: "This is the basic BOQ row. Sum of all line amounts in a section = that section's subtotal.",
+          });
+
+          // Step 2: section subtotals → base
+          steps.push({
+            title: "Sum every section's subtotal → base total",
+            formula:
+              computed.length > 0
+                ? computed.map((s) => `${s.code || s.title}: ${fmt(s.subtotal, 2)}`).join("  +  ")
+                : "No sections yet",
+            result: `Base total = ${fmt(totals.base, 2)}`,
+            note: "The base total is the raw cost of all work measured — before any percentage additions.",
+          });
+
+          // Step 3: contingency + overhead
+          steps.push({
+            title: "Add contingency and overhead (each computed on the base)",
+            formula:
+              `Contingency = ${boq.contingencyPct}% × ${fmt(totals.base, 2)} = ${fmt(totals.contingency, 2)}    ` +
+              `Overhead = ${boq.overheadPct}% × ${fmt(totals.base, 2)} = ${fmt(totals.overhead, 2)}`,
+            result: `Subtotal (before tax) = ${fmt(totals.subtotalWithAdds, 2)}`,
+            note: "Contingency covers unforeseen cost overruns (typically 2–5%). Overhead covers contractor's indirect costs — office, supervision, insurance (typically 5–10%). Both are computed on the base total, not on each other.",
+          });
+
+          // Step 4: VAT
+          steps.push({
+            title: "Apply VAT on the subtotal",
+            formula: `VAT = ${boq.vatPct}% × ${fmt(totals.subtotalWithAdds, 2)} = ${fmt(totals.vat, 2)}`,
+            result: `VAT = ${fmt(totals.vat, 2)}`,
+            note: "VAT (Nepal: 13%) is applied AFTER contingency and overhead are added — not on the base total alone. Always check the tender conditions to confirm whether VAT is included or to be added.",
+          });
+
+          // Step 5: grand total
+          steps.push({
+            title: "Add VAT to the subtotal → grand total",
+            formula: `${fmt(totals.subtotalWithAdds, 2)} + ${fmt(totals.vat, 2)} = ${fmt(totals.grand, 2)}`,
+            result: `GRAND TOTAL = ${fmt(totals.grand, 2)}`,
+            note: "This is the figure that goes on the bid cover sheet. Round it to the nearest rupee in the final submission — most tenders explicitly forbid paisa amounts.",
+          });
+
+          return steps;
+        })()}
+      />
+
       {/* Grand total summary */}
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
         <div className="rounded-lg border border-border bg-card p-4">
@@ -619,6 +781,87 @@ export function BoqGenerator() {
               />
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* Template picker modal */}
+      {showTemplatePicker && (
+        <TemplatePicker
+          onClose={() => setShowTemplatePicker(false)}
+          onPick={handleLoadTemplate}
+        />
+      )}
+    </div>
+  );
+}
+
+// ============ Template picker modal ============
+
+function TemplatePicker({
+  onClose,
+  onPick,
+}: {
+  onClose: () => void;
+  onPick: (templateId: string) => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 animate-fade-in"
+      onClick={onClose}
+    >
+      <div
+        className="relative w-full max-w-2xl rounded-xl border border-border bg-card shadow-xl max-h-[85vh] overflow-hidden flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-border">
+          <div>
+            <h3 className="text-sm font-semibold">Start from a template</h3>
+            <p className="text-[11px] text-muted-foreground mt-0.5">
+              Pre-built BOQs with default Nepal market rates. You can edit every line after loading.
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-muted-foreground hover:text-foreground p-1 rounded-md hover:bg-muted"
+            aria-label="Close"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/* Template cards */}
+        <div className="p-4 overflow-y-auto scrollbar-thin space-y-2.5">
+          {BOQ_TEMPLATES.map((tpl) => (
+            <button
+              key={tpl.id}
+              onClick={() => onPick(tpl.id)}
+              className="w-full text-left rounded-lg border border-border bg-card hover:border-primary/30 hover:bg-primary/5 p-4 transition-all group"
+            >
+              <div className="flex items-start gap-3">
+                <div className="flex h-9 w-9 items-center justify-center rounded-md bg-primary/10 border border-primary/20 text-primary shrink-0">
+                  <Sparkles className="h-4 w-4" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-baseline gap-2">
+                    <h4 className="text-sm font-semibold text-foreground">{tpl.name}</h4>
+                    <span className="text-[10px] text-muted-foreground nums tabular-nums">
+                      {tpl.sectionCount} sections · {tpl.itemCount} items
+                    </span>
+                  </div>
+                  <p className="text-[12px] text-muted-foreground mt-1 leading-snug">
+                    {tpl.description}
+                  </p>
+                </div>
+                <ChevronRight className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors shrink-0 mt-1" />
+              </div>
+            </button>
+          ))}
+        </div>
+
+        {/* Footer */}
+        <div className="px-5 py-3 border-t border-border bg-muted/30 text-[11px] text-muted-foreground">
+          Loading a template replaces the current BOQ. Save your work first if you don&apos;t want to lose it.
         </div>
       </div>
     </div>

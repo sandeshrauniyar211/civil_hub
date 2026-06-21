@@ -228,11 +228,13 @@ export function ResultLine({
   label,
   value,
   unit,
+  hint,
   highlight = false,
 }: {
   label: string;
   value: React.ReactNode;
   unit?: string;
+  hint?: string;
   highlight?: boolean;
 }) {
   return (
@@ -243,7 +245,7 @@ export function ResultLine({
       )}
     >
       <span className="text-xs text-muted-foreground">{label}</span>
-      <span className="flex items-baseline gap-1">
+      <span className="flex items-baseline gap-1.5">
         <span
           className={cn(
             "nums text-sm font-semibold tabular-nums",
@@ -253,6 +255,9 @@ export function ResultLine({
           {value}
         </span>
         {unit && <span className="text-[11px] text-muted-foreground">{unit}</span>}
+        {hint && (
+          <span className="text-[10px] text-muted-foreground/70 italic">({hint})</span>
+        )}
       </span>
     </div>
   );

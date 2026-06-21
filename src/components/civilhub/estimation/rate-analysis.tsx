@@ -26,6 +26,7 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { FieldLabel, Tag, ResultLine, Divider, EmptyState } from "../lib/ui";
 import { downloadXLSX } from "../lib/excel";
+import { ProcessPanel, type ProcessStep } from "../lib/process-panel";
 import { fmt, round, uid, type RateAnalysis, type RateLine } from "../lib/estimation-types";
 import {
   getRateAnalyses,
@@ -472,6 +473,70 @@ export function RateAnalysisTool() {
         onRemove={(id) => removeLine("equipment", id)}
         subtotal={computed.eqpTotal}
         allowEmpty
+      />
+
+      {/* Process panel — how the per-unit rate is built up */}
+      <ProcessPanel
+        intro={
+          <>
+            Rate analysis builds up a <strong>per-unit rate</strong> by summing everything spent on{" "}
+            <strong>materials</strong>, <strong>labour</strong>, and <strong>equipment</strong> for a
+            chosen basis quantity (e.g. <em>1 m³</em> or <em>10 m²</em>), then dividing the grand
+            total by that basis quantity. The numbers below are live — they update with your edits
+            above.
+          </>
+        }
+        steps={(() => {
+          const basisUnit = analysis.unit.replace("per ", "");
+          const steps: ProcessStep[] = [];
+
+          steps.push({
+            title: "Sum the materials — quantity × rate, line by line",
+            formula:
+              computed.matLines
+                .map(
+                  (l) =>
+                    `${l.description || "(line)"}: ${round(l.quantity, 3)} × ${round(l.rate, 2)} = ${round(l.amount, 2)}`,
+                )
+                .join("   +   ") || "No material lines",
+            result: `Materials subtotal = ${fmt(computed.matTotal, 2)}`,
+            note: "Each material line is its quantity consumed for the basis quantity, multiplied by its unit rate.",
+          });
+
+          steps.push({
+            title: "Sum the labour and equipment the same way",
+            formula:
+              `Labour: ${computed.labLines.map((l) => `${round(l.quantity, 3)} × ${round(l.rate, 2)}`).join(" + ") || "0"} = ${fmt(computed.labTotal, 2)}    ` +
+              `Equipment: ${computed.eqpLines.map((l) => `${round(l.quantity, 3)} × ${round(l.rate, 2)}`).join(" + ") || "0"} = ${fmt(computed.eqpTotal, 2)}`,
+            result: `Labour + Equipment = ${fmt(computed.labTotal + computed.eqpTotal, 2)}`,
+            note: "Labour and equipment are billed per day / per hour consumed for the basis quantity — not for the whole project.",
+          });
+
+          steps.push({
+            title: "Add the three subtotals → grand total for the basis quantity",
+            formula: `${fmt(computed.matTotal, 2)} (mat) + ${fmt(computed.labTotal, 2)} (lab) + ${fmt(computed.eqpTotal, 2)} (eqp) = ${fmt(computed.grand, 2)}`,
+            result: `Grand total for ${analysis.analysisQuantity} ${basisUnit} = ${fmt(computed.grand, 2)}`,
+            note: "This is the cost of producing the basis quantity — e.g. casting 1 m³ of M20 concrete or plastering 10 m² of wall.",
+          });
+
+          steps.push({
+            title: "Divide by the basis quantity → rate per unit",
+            formula: `${fmt(computed.grand, 2)} ÷ ${analysis.analysisQuantity} ${basisUnit} = ${fmt(computed.perUnit, 2)} per ${basisUnit}`,
+            result: `Rate per ${basisUnit} = ${fmt(computed.perUnit, 2)}`,
+            note: "This is the number that goes into the BOQ as the unit rate for this item. If the basis quantity is 10 m², dividing by 10 gives the rate per m².",
+          });
+
+          steps.push({
+            title: "Sanity check — what's the biggest cost driver?",
+            formula:
+              `Materials share = ${fmt((computed.matTotal / Math.max(1, computed.grand)) * 100, 1)}%   ` +
+              `Labour share = ${fmt((computed.labTotal / Math.max(1, computed.grand)) * 100, 1)}%   ` +
+              `Equipment share = ${fmt((computed.eqpTotal / Math.max(1, computed.grand)) * 100, 1)}%`,
+            note: "For RCC, materials (cement + aggregate + steel) usually dominate. For plaster, labour is a larger share. If a share looks off, double-check the rate or quantity you entered.",
+          });
+
+          return steps;
+        })()}
       />
 
       {/* Grand total */}

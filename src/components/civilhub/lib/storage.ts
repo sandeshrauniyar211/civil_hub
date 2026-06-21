@@ -125,11 +125,8 @@ export function useCivilStore<T>(
     (next: T) => {
       // next can be value or function
       if (typeof next === "function") {
-        // @ts-expect-error - allow functional update
-        setValue((prev: T) => {
-          const computed = next(prev);
-          return computed;
-        });
+        const fn = next as (prev: T) => T;
+        setValue((prev: T) => fn(prev));
       } else {
         setValue(next);
       }
