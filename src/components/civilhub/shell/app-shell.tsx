@@ -15,6 +15,7 @@ import { SurveyingView } from "../views/surveying-view";
 import { EstimationView } from "../views/estimation-view";
 import { CalculatorsView } from "../views/calculators-view";
 import { ResourcesView } from "../views/resources-view";
+import { ExploreView } from "../views/explore-view";
 
 export function AppShell() {
   return (
@@ -42,6 +43,7 @@ function Shell() {
         {state.view === "estimation" && <EstimationView />}
         {state.view === "calculators" && <CalculatorsView />}
         {state.view === "resources" && <ResourcesView />}
+        {state.view === "explore" && <ExploreView />}
       </main>
 
       <Footer />

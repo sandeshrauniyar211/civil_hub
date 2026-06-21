@@ -6,7 +6,8 @@ export type ViewId =
   | "surveying"
   | "estimation"
   | "calculators"
-  | "resources";
+  | "resources"
+  | "explore";
 
 export type CalculatorId =
   // Basic

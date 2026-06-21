@@ -13,6 +13,8 @@ import {
   ArrowRight,
   BookOpen,
   Award,
+  Compass,
+  Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useNav } from "../lib/nav";
@@ -91,6 +93,28 @@ export function DashboardView() {
         description="Your cumulative GPA, calculation history, and saved semester records — all in one analytical view."
         meta={<span>Guest mode · Stored locally</span>}
       />
+
+      {/* Phase 2 — Explore banner (feature discovery entry point) */}
+      <button
+        onClick={() => go("explore")}
+        className="group rounded-lg border border-primary/20 bg-gradient-to-br from-primary/10 via-primary/[0.04] to-transparent p-4 md:p-5 text-left hover:border-primary/40 hover:from-primary/15 transition-all"
+      >
+        <div className="flex items-start gap-4">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-primary/30 bg-primary/10 text-primary shrink-0">
+            <Sparkles className="h-5 w-5" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+              <h3 className="text-sm font-semibold">New: Explore view</h3>
+              <Tag tone="primary">Phase 2</Tag>
+            </div>
+            <p className="text-xs md:text-sm text-muted-foreground leading-relaxed">
+              30+ calculators is a lot to navigate. The new Explore view groups every tool by what you're actually doing — coursework, site work, lab, exam prep, design — so you find the right one in seconds.
+            </p>
+          </div>
+          <ArrowRight className="h-4 w-4 text-primary shrink-0 mt-1 group-hover:translate-x-0.5 transition-transform" />
+        </div>
+      </button>
 
       {/* Top stat row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -274,11 +298,11 @@ export function DashboardView() {
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
           {[
             { label: "IOE Marks", icon: <GraduationCap className="h-4 w-4" />, view: "gpa" as const },
-            { label: "Surveying", icon: <BookOpen className="h-4 w-4" />, view: "surveying" as const },
+            { label: "Surveying", icon: <Compass className="h-4 w-4" />, view: "surveying" as const },
             { label: "Calculators", icon: <CalcIcon className="h-4 w-4" />, view: "calculators" as const },
             { label: "Estimation", icon: <Save className="h-4 w-4" />, view: "estimation" as const },
             { label: "Resources", icon: <BookOpen className="h-4 w-4" />, view: "resources" as const },
-            { label: "Search", icon: <CalcIcon className="h-4 w-4" />, view: "dashboard" as const },
+            { label: "Explore all", icon: <Sparkles className="h-4 w-4" />, view: "explore" as const },
           ].map((t) => (
             <button
               key={t.label}

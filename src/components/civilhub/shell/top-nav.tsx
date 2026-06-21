@@ -4,7 +4,7 @@
 // Linear / Notion / GitHub style — flat, dense, no decoration.
 
 import { useEffect, useState } from "react";
-import { Menu, Search, Moon, Sun } from "lucide-react";
+import { Menu, Search, Moon, Sun, Compass } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useNav } from "../lib/nav";
 import { BrandCombo } from "../branding/brand";
@@ -14,6 +14,7 @@ import type { ViewId } from "../lib/types";
 interface NavItem {
   id: ViewId;
   label: string;
+  icon?: React.ReactNode;
 }
 
 const PRIMARY_NAV: NavItem[] = [
@@ -23,6 +24,7 @@ const PRIMARY_NAV: NavItem[] = [
   { id: "estimation", label: "Estimation" },
   { id: "calculators", label: "Calculators" },
   { id: "resources", label: "Resources" },
+  { id: "explore", label: "Explore", icon: <Compass className="h-3.5 w-3.5" /> },
 ];
 
 export function TopNav({ onOpenSearch }: { onOpenSearch: () => void }) {
@@ -81,18 +83,22 @@ export function TopNav({ onOpenSearch }: { onOpenSearch: () => void }) {
           <nav className="hidden md:flex items-center gap-0.5" aria-label="Primary">
             {PRIMARY_NAV.map((item) => {
               const active = state.view === item.id;
+              const isExplore = item.id === "explore";
               return (
                 <button
                   key={item.id}
                   onClick={() => handleNav(item.id)}
                   className={cn(
-                    "px-2.5 py-1.5 text-[13px] font-medium rounded-md transition-colors",
+                    "inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[13px] font-medium rounded-md transition-colors",
                     active
                       ? "text-foreground bg-muted"
-                      : "text-muted-foreground hover:text-foreground hover:bg-muted/60",
+                      : isExplore
+                        ? "text-primary hover:bg-primary/10"
+                        : "text-muted-foreground hover:text-foreground hover:bg-muted/60",
                   )}
                   aria-current={active ? "page" : undefined}
                 >
+                  {item.icon}
                   {item.label}
                 </button>
               );
@@ -157,17 +163,21 @@ export function TopNav({ onOpenSearch }: { onOpenSearch: () => void }) {
           <nav className="mx-auto max-w-[1280px] px-4 py-2 flex flex-col" aria-label="Mobile">
             {PRIMARY_NAV.map((item) => {
               const active = state.view === item.id;
+              const isExplore = item.id === "explore";
               return (
                 <button
                   key={item.id}
                   onClick={() => handleNav(item.id)}
                   className={cn(
-                    "px-3 py-2.5 text-sm font-medium rounded-md text-left transition-colors",
+                    "inline-flex items-center gap-2 px-3 py-2.5 text-sm font-medium rounded-md text-left transition-colors",
                     active
                       ? "text-foreground bg-muted"
-                      : "text-muted-foreground hover:text-foreground hover:bg-muted/60",
+                      : isExplore
+                        ? "text-primary hover:bg-primary/10"
+                        : "text-muted-foreground hover:text-foreground hover:bg-muted/60",
                   )}
                 >
+                  {item.icon}
                   {item.label}
                 </button>
               );

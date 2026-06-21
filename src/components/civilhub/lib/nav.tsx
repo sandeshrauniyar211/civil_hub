@@ -35,6 +35,7 @@ function parseHash(): NavState {
     "estimation",
     "calculators",
     "resources",
+    "explore",
   ];
   if (!validViews.includes(view as ViewId)) return DEFAULT;
   const out: NavState = { view: view as ViewId };

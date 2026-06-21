@@ -15,6 +15,7 @@ import {
   BookOpen,
   FolderTree,
   LayoutDashboard,
+  Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useNav } from "../lib/nav";
@@ -72,6 +73,15 @@ export function CommandPalette({
   // Build search index
   const items = useMemo<SearchItem[]>(() => {
     const navItems: SearchItem[] = [
+      {
+        id: "nav-explore",
+        label: "Explore all tools",
+        description: "Browse 30+ calculators and modules by use-case: coursework, site work, lab, design",
+        group: "Discover",
+        icon: <Sparkles className="h-4 w-4" />,
+        keywords: ["explore", "discover", "find", "browse", "popular", "all", "coursework", "site", "lab"],
+        action: () => go("explore"),
+      },
       {
         id: "nav-dashboard",
         label: "Dashboard",
