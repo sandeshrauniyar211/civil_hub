@@ -83,7 +83,7 @@ const FEATURED_MODULES = [
   {
     id: "estimation",
     title: "Estimation & BOQ",
-    description: "Quantity takeoffs and bill-of-quantities helpers for rate analysis.",
+    description: "Quantity takeoff, BOQ generator, and rate analysis with Excel I/O. Templates for common work types.",
     icon: <FolderTree className="h-4 w-4" />,
     useCases: ["estimating", "site-work", "thesis"] as UseCaseId[],
     action: { view: "estimation" as const },

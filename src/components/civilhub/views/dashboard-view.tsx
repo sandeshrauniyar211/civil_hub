@@ -105,11 +105,11 @@ export function DashboardView() {
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-1">
-              <h3 className="text-sm font-semibold">New: Explore view</h3>
+              <h3 className="text-sm font-semibold">New: Explore view + full Estimation suite</h3>
               <Tag tone="primary">Phase 2</Tag>
             </div>
             <p className="text-xs md:text-sm text-muted-foreground leading-relaxed">
-              30+ calculators is a lot to navigate. The new Explore view groups every tool by what you're actually doing — coursework, site work, lab, exam prep, design — so you find the right one in seconds.
+              Three big additions: Explore (browse all tools by use-case), and the Estimation suite (Quantity Takeoff + BOQ Generator + Rate Analysis with Excel I/O). 30+ calculators is a lot to navigate — Explore groups every tool by what you're actually doing.
             </p>
           </div>
           <ArrowRight className="h-4 w-4 text-primary shrink-0 mt-1 group-hover:translate-x-0.5 transition-transform" />

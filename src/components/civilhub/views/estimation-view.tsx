@@ -1,79 +1,119 @@
 "use client";
 
-// CivilHub — Estimation view (Phase 2 placeholder + a couple of useful BOQ-style helpers)
-// Per PRD: Phase 2 modules include Quantity Estimation, BOQ Generator, Cost Estimator.
+// CivilHub — Estimation view (Phase 2)
+// Three sub-tools, mirroring the Surveying toolkit's layout:
+//   1. Quantity Takeoff — item-wise quantity takeoff from drawings
+//   2. BOQ Generator — bill of quantities with rates + adjustments
+//   3. Rate Analysis — material/labour/equipment breakdown with templates
 
-import { useState } from "react";
-import { Construction, ArrowRight, FolderTree, FileText } from "lucide-react";
+import { FolderTree, ClipboardList, PencilRuler, ArrowRight } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { useNav } from "../lib/nav";
-import { SectionHeader, EmptyState, Tag } from "../lib/ui";
-import { Button } from "@/components/ui/button";
+import { SectionHeader, Tag } from "../lib/ui";
+import { QuantityTakeoff } from "../estimation/quantity-takeoff";
+import { BoqGenerator } from "../estimation/boq-generator";
+import { RateAnalysisTool } from "../estimation/rate-analysis";
+
+type Tool = "takeoff" | "boq" | "rate";
+
+const TOOLS: { id: Tool; label: string; description: string; icon: React.ReactNode }[] = [
+  {
+    id: "takeoff",
+    label: "Quantity Takeoff",
+    description: "Item-wise quantity from dimensions. Multi-trade. Auto-calculated formulas.",
+    icon: <FolderTree className="h-4 w-4" />,
+  },
+  {
+    id: "boq",
+    label: "BOQ Generator",
+    description: "Multi-section bill of quantities with rates, contingency, overhead, VAT.",
+    icon: <ClipboardList className="h-4 w-4" />,
+  },
+  {
+    id: "rate",
+    label: "Rate Analysis",
+    description: "Material + labour + equipment breakdown. Pre-built templates for common work types.",
+    icon: <PencilRuler className="h-4 w-4" />,
+  },
+];
 
 export function EstimationView() {
-  const { go, openCalculator } = useNav();
+  const { state, go } = useNav();
+  const activeTool = (state.sub as Tool) || "takeoff";
 
   return (
     <div className="flex flex-col gap-6">
       <SectionHeader
         eyebrow="Estimation"
         title="Quantity Estimation & BOQ"
-        description="Phase 2 modules — quantity estimation, BOQ generator, and cost estimator are being designed. The related calculators are already live in the Calculators suite."
-        meta={<Tag tone="warning">Phase 2 — In progress</Tag>}
+        description="Three connected tools for civil estimation: takeoff quantities from drawings, build a priced BOQ, and analyse rates line-by-line. All saved locally — no account required."
+        meta={<Tag tone="primary">3 tools · Excel I/O</Tag>}
       />
 
-      {/* Phase 2 modules */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        {[
-          { title: "Quantity Estimation", desc: "Item-wise quantity takeoff from drawings, organized by trade.", icon: <FolderTree className="h-4 w-4" /> },
-          { title: "BOQ Generator", desc: "Bill of Quantities with abstract, rate analysis, and PDF export.", icon: <FileText className="h-4 w-4" /> },
-          { title: "Cost Estimator", desc: "Rate analysis with material, labour, and equipment breakdown.", icon: <Construction className="h-4 w-4" /> },
-        ].map((m) => (
-          <div key={m.title} className="rounded-lg border border-dashed border-border bg-muted/20 p-4">
-            <div className="flex h-8 w-8 items-center justify-center rounded-md border border-border bg-background text-muted-foreground mb-3">
-              {m.icon}
-            </div>
-            <h3 className="text-sm font-semibold mb-1">{m.title}</h3>
-            <p className="text-xs text-muted-foreground leading-relaxed">{m.desc}</p>
-            <div className="mt-3">
-              <Tag tone="warning">Coming soon</Tag>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Live related tools */}
-      <div className="rounded-lg border border-border bg-card p-5">
-        <h3 className="text-sm font-semibold mb-1">Live estimation tools</h3>
-        <p className="text-xs text-muted-foreground mb-4">
-          These calculators are already available and feed into the future BOQ module.
-        </p>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-          {[
-            { id: "concrete-volume" as const, label: "Concrete Volume", desc: "Member-wise pour volumes" },
-            { id: "brickwork" as const, label: "Brickwork Estimator", desc: "Brick + mortar quantities" },
-            { id: "cement-sand-aggregate" as const, label: "Cement, Sand, Aggregate", desc: "Per mix grade" },
-            { id: "plaster" as const, label: "Plaster Quantity", desc: "Cement + sand per area" },
-            { id: "tile" as const, label: "Tile Quantity", desc: "Tile count + waste" },
-            { id: "steel-quantity" as const, label: "Steel Quantity", desc: "Rebar weight per diameter" },
-          ].map((t) => (
+      {/* Tool selector — horizontal scrollable on mobile */}
+      <div className="flex gap-2 overflow-x-auto scrollbar-thin pb-1">
+        {TOOLS.map((t) => {
+          const active = activeTool === t.id;
+          return (
             <button
               key={t.id}
-              onClick={() => openCalculator(t.id)}
-              className="group flex items-start gap-3 p-3 rounded-md border border-border bg-background hover:border-foreground/20 hover:bg-muted/30 transition-all text-left"
+              onClick={() => go("estimation", { sub: t.id })}
+              className={cn(
+                "flex items-start gap-2.5 p-3 rounded-lg border text-left min-w-[240px] shrink-0 transition-all",
+                active
+                  ? "border-primary/30 bg-primary/5"
+                  : "border-border bg-card hover:border-foreground/20 hover:bg-muted/30",
+              )}
             >
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium">{t.label}</div>
-                <div className="text-[11px] text-muted-foreground mt-0.5">{t.desc}</div>
+              <div className={cn(
+                "flex h-7 w-7 items-center justify-center rounded-md border shrink-0",
+                active ? "border-primary/20 bg-primary/10 text-primary" : "border-border bg-background text-muted-foreground",
+              )}>
+                {t.icon}
               </div>
-              <ArrowRight className="h-3.5 w-3.5 text-muted-foreground group-hover:text-foreground transition-colors shrink-0 mt-1" />
+              <div className="min-w-0">
+                <div className={cn("text-sm font-medium", active ? "text-foreground" : "text-foreground")}>{t.label}</div>
+                <div className="text-[11px] text-muted-foreground leading-snug line-clamp-2">{t.description}</div>
+              </div>
             </button>
-          ))}
-        </div>
-        <div className="mt-4">
-          <Button variant="outline" size="sm" onClick={() => go("calculators")}>
-            Browse all calculators
-            <ArrowRight className="h-3.5 w-3.5 ml-1.5" />
-          </Button>
+          );
+        })}
+      </div>
+
+      <div className="animate-fade-in">
+        {activeTool === "takeoff" && <QuantityTakeoff />}
+        {activeTool === "boq" && <BoqGenerator />}
+        {activeTool === "rate" && <RateAnalysisTool />}
+      </div>
+
+      {/* Workflow guide */}
+      <div className="rounded-lg border border-border bg-muted/30 p-4">
+        <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground mb-3">
+          Suggested workflow
+        </h3>
+        <ol className="space-y-2 text-xs text-muted-foreground">
+          <li className="flex items-start gap-2">
+            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-border bg-background text-[10px] font-semibold text-foreground nums tabular-nums mt-0.5">1</span>
+            <span>
+              <strong className="text-foreground">Quantity Takeoff</strong> — measure each item from the drawing (L×W×H×N or other formula). Group by trade. Save the project.
+            </span>
+          </li>
+          <li className="flex items-start gap-2">
+            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-border bg-background text-[10px] font-semibold text-foreground nums tabular-nums mt-0.5">2</span>
+            <span>
+              <strong className="text-foreground">Rate Analysis</strong> — for every priced item, build a rate-per-unit breakdown (materials + labour + equipment). Start from a template and tweak. Save it.
+            </span>
+          </li>
+          <li className="flex items-start gap-2">
+            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-border bg-background text-[10px] font-semibold text-foreground nums tabular-nums mt-0.5">3</span>
+            <span>
+              <strong className="text-foreground">BOQ Generator</strong> — paste the quantities from step 1 and rates from step 2 into a multi-section BOQ. Add contingency, overhead, VAT → grand total. Export to Excel for submission.
+            </span>
+          </li>
+        </ol>
+        <div className="mt-3 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <ArrowRight className="h-3 w-3" />
+          <span>Each tool saves to your browser's localStorage — your data never leaves your device.</span>
         </div>
       </div>
     </div>
